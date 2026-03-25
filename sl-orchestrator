@@ -1,0 +1,185 @@
+#!/bin/bash
+
+#SBATCH --job-name=orchestrator
+#SBATCH --account=project_462000999
+#SBATCH --partition=small
+#SBATCH --mem=8G
+#SBATCH --time=72:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --output=slurm-logs/orch_%j.out
+#SBATCH --error=slurm-logs/orch_%j.err
+
+set -euo pipefail
+
+LANG="${1:-eng_Latn}"
+ROOT="${PWD}"
+MAP_URL="https://data.hplt-project.org/three/sorted/${LANG}.map"
+SHARD_LIST="${ROOT}/shard_list_${LANG}.txt"
+COUNTS_DIR="${ROOT}/counts"
+PLAN_FILE="${ROOT}/${LANG}_plan.jsonl"
+SAMPLES_DIR="${ROOT}/samples"
+
+# worker script to launch (must be executable)
+WORKER="${ROOT}/sl-hplt-sampler"
+
+# build shard list
+curl -s "$MAP_URL" | awk -F/ '{ if ($NF ~ /^(9|10)/) print $0 }' > "$SHARD_LIST"
+NUMFILES=$(wc -l < "$SHARD_LIST" | tr -d ' ')
+if [ -z "$NUMFILES" ] || [ "$NUMFILES" -eq 0 ]; then
+  echo "No shards found for ${LANG}" >&2
+  exit 1
+fi
+
+BATCH=180
+JOB_COUNTS="hplt_counts"
+JOB_PLAN="hplt_plan"
+JOB_SAMPLE="hplt_sample"
+
+sanitize_jobid() {
+  local raw="$1"
+  local s
+  s=$(printf "%s" "${raw}" | tr -d '[:space:]')
+  s=${s%%_*}
+  if [[ -z "${s}" || ! "${s}" =~ ^[0-9]+$ ]]; then
+    echo ""
+  else
+    echo "${s}"
+  fi
+}
+
+last_counts_jobid=""
+echo "[ORCH] Submitting counts in batches (BATCH=${BATCH}) for ${NUMFILES} shards"
+for (( s=0; s<NUMFILES; s+=BATCH )); do
+  e=$((s + BATCH - 1))
+  if [ $e -ge $((NUMFILES - 1)) ]; then e=$((NUMFILES - 1)); fi
+
+  # wait until no other count jobs of same name exist
+  while true; do
+    current=$(squeue -h -u "$USER" -n "$JOB_COUNTS" | wc -l | tr -d ' ')
+    current=${current:-0}
+    if [ "$current" -eq 0 ]; then break; fi
+    echo "[ORCH] Waiting for existing ${JOB_COUNTS} jobs (${current}) to finish; sleeping 30s"
+    sleep 30
+  done
+
+  echo "[ORCH] Submitting counts array ${s}-${e}"
+  raw_id=$(sbatch --parsable --job-name="${JOB_COUNTS}" --array="${s}-${e}" --export=ALL,LANG="${LANG}",SHARD_LIST="${SHARD_LIST}",MODE=counts "${WORKER}")
+  jid=$(sanitize_jobid "${raw_id}")
+  if [ -z "${jid}" ]; then
+    echo "[ORCH] Failed to obtain valid counts job id from sbatch output: '${raw_id}'" >&2
+    exit 1
+  fi
+  last_counts_jobid="${jid}"
+  echo "[ORCH] Submitted counts job ${last_counts_jobid}"
+done
+
+# submit plan job dependent on last counts batch finishing
+echo "[ORCH] Submitting plan job dependent on ${last_counts_jobid}"
+raw_plan_id=$(sbatch --parsable --job-name="${JOB_PLAN}" --dependency="afterok:${last_counts_jobid}" --export=ALL,LANG="${LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=plan "${WORKER}")
+plan_jobid=$(sanitize_jobid "${raw_plan_id}")
+if [ -z "${plan_jobid}" ]; then
+  echo "[ORCH] Failed to obtain valid plan job id from sbatch output: '${raw_plan_id}'" >&2
+  exit 1
+fi
+echo "[ORCH] Submitted plan job ${plan_jobid}"
+
+# wait for plan job to finish (squeue will show it while pending/running)
+echo "[ORCH] Waiting for plan job ${plan_jobid} to finish"
+while true; do
+  sleep 10
+  if [ -z "$(squeue -h -j ${plan_jobid} -o %.18i 2>/dev/null)" ]; then
+    break
+  fi
+  echo "[ORCH] Plan job ${plan_jobid} still in queue; sleeping 20s"
+  sleep 20
+done
+echo "[ORCH] Plan job ${plan_jobid} finished"
+
+# return codes:
+# 0 -> job exists in controller (can be used as dependency)
+# 1 -> job not in controller but finished successfully (no dependency needed)
+# 2 -> job not found / failed / unknown (treat as error)
+check_job_for_dependency() {
+  local jid="$1"
+  if scontrol show job "${jid}" >/dev/null 2>&1; then
+    return 0
+  fi
+  # job not in controller table; check accounting
+  local sac
+  sac=$(sacct -j "${jid}" -n -P -o State,ExitCode 2>/dev/null | head -n1 || true)
+  if [ -z "${sac}" ]; then
+    return 2
+  fi
+  local state="${sac%%|*}"
+  local exitcode="${sac#*|}"
+  if [ "${state}" = "COMPLETED" ] && [[ "${exitcode}" =~ ^0:0$ ]]; then
+    return 1
+  fi
+  return 2
+}
+
+# submit sampling batches; each batch will run in parallel but batches are serialized by waiting for existing sample jobs
+last_sample_jobid=""
+echo "[ORCH] Submitting sampling in batches (BATCH=${BATCH})"
+for (( s=0; s<NUMFILES; s+=BATCH )); do
+  e=$((s + BATCH - 1))
+  if [ $e -ge $((NUMFILES - 1)) ]; then e=$((NUMFILES - 1)); fi
+
+  # wait until no other sample jobs of same name exist
+  while true; do
+    current=$(squeue -h -u "$USER" -n "$JOB_SAMPLE" | wc -l | tr -d ' ')
+    current=${current:-0}
+    if [ "$current" -eq 0 ]; then break; fi
+    echo "[ORCH] Waiting for existing ${JOB_SAMPLE} jobs (${current}) to finish; sleeping 30s"
+    sleep 30
+  done
+
+  echo "[ORCH] Submitting sample array ${s}-${e} (depends on plan ${plan_jobid})"
+  check_job_for_dependency "${plan_jobid}"
+  case $? in
+    0)
+      # plan job exists in controller -> safe to pass as dependency
+      raw_sample_id=$(sbatch --parsable --job-name="${JOB_SAMPLE}" --dependency="afterok:${plan_jobid}" --array="${s}-${e}" --export=ALL,LANG="${LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}" 2>&1)
+      ;;
+    1)
+      # plan finished successfully and was purged from controller -> submit without dependency
+      echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
+      raw_sample_id=$(sbatch --parsable --job-name="${JOB_SAMPLE}" --array="${s}-${e}" --export=ALL,LANG="${LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}" 2>&1)
+      ;;
+    *)
+      echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2
+      sacct -j "${plan_jobid}" --format=JobID,State,ExitCode,Submit,Start,End || true
+      exit 1
+      ;;
+  esac
+
+  sample_jid=$(sanitize_jobid "${raw_sample_id}")
+  if [ -z "${sample_jid}" ]; then
+    echo "[ORCH] Failed to obtain valid sample job id from sbatch output: '${raw_sample_id}'" >&2
+    echo "[ORCH DEBUG] raw sbatch output: ${raw_sample_id}" >&2
+    exit 1
+  fi
+  last_sample_jobid="${sample_jid}"
+  echo "[ORCH] Submitted sample job ${last_sample_jobid}"
+done
+
+# submit concatenation job dependent on last sample batch
+echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
+check_job_for_dependency "${last_sample_jobid}"
+case $? in
+  0)
+    raw_concat_id=$(sbatch --parsable --job-name="hplt_concat" --dependency="afterok:${last_sample_jobid}" --export=ALL,LANG="${LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=concat "${WORKER}" 2>&1)
+    ;;
+  1)
+    echo "[ORCH] Sample batch ${last_sample_jobid} already finished (accounting OK); submitting concat without dependency"
+    raw_concat_id=$(sbatch --parsable --job-name="hplt_concat" --export=ALL,LANG="${LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=concat "${WORKER}" 2>&1)
+    ;;
+  *)
+    echo "[ORCH] Sample job ${last_sample_jobid} not found or failed; aborting" >&2
+    sacct -j "${last_sample_jobid}" --format=JobID,State,ExitCode,Submit,Start,End || true
+    exit 1
+    ;;
+esac
+
+echo "[ORCH] Orchestrator finished submitting pipeline. Monitor with squeue."

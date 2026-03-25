@@ -1,0 +1,77 @@
+#!/bin/bash
+
+#SBATCH --job-name=hplt_sampler
+#SBATCH --account=project_462000999
+#SBATCH --partition=small
+#SBATCH --mem=32G
+#SBATCH --time=03:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --output=slurm-logs/array_%A_%a.out
+#SBATCH --error=slurm-logs/array_%A_%a.err
+#SBATCH --array=0-0
+
+# This worker script is intended to be launched by the orchestrator (sl-orchestrator).
+# It performs one of: counts, sample, plan, concat depending on the MODE env var.
+
+set -euo pipefail
+
+# Make logging a bit easier
+mkdir -p slurm-logs
+# Use safe defaults for SLURM array variables so non-array jobs (plan/concat) do not fail
+ARR_TASK="${SLURM_ARRAY_TASK_ID:-none}"
+ARR_JOB="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-nojob}}"
+rm -f "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.err" || true
+rm -f "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.out" || true
+ln -s "array_${ARR_JOB}_${ARR_TASK}.err" "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.err" || true
+ln -s "array_${ARR_JOB}_${ARR_TASK}.out" "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.out" || true
+
+LANG="${LANG:-eng_Latn}"
+SHARD_LIST="${SHARD_LIST:-${PWD}/shard_list_${LANG}.txt}"
+MODE="${MODE:-counts}"
+PLAN_FILE="${PLAN_FILE:-${PWD}/${LANG}_plan.jsonl}"
+COUNTS_DIR="${COUNTS_DIR:-${PWD}/counts}"
+SAMPLES_DIR="${SAMPLES_DIR:-${PWD}/samples}"
+
+if [ "$MODE" != "plan" ] && [ "$MODE" != "concat" ]; then
+  if [ -z "${SHARD_LIST:-}" ] || [ ! -r "${SHARD_LIST:-}" ]; then
+    echo "SHARD_LIST not provided or unreadable" >&2
+    exit 1
+  fi
+
+  idx=$((SLURM_ARRAY_TASK_ID + 1))
+  SHARD_URL=$(sed -n "${idx}p" "$SHARD_LIST")
+  if [ -z "${SHARD_URL:-}" ]; then
+    echo "No shard URL at line ${idx} in ${SHARD_LIST}" >&2
+    exit 1
+  fi
+fi
+
+module purge > /dev/null 2>&1 || true
+module use /appl/local/csc/modulefiles > /dev/null 2>&1 || true
+module load pytorch  > /dev/null 2>&1 || true
+
+case "$MODE" in
+  counts)
+    echo "[WORKER] MODE=counts LANG=${LANG} SHARD=${SHARD_URL}"
+    python3 -u counts.py "$LANG" "$SHARD_URL" --counts-dir "$COUNTS_DIR"
+    ;;
+  sample)
+    echo "[WORKER] MODE=sample LANG=${LANG} SHARD=${SHARD_URL} PLAN=${PLAN_FILE}"
+    python3 -u sample.py "$LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
+    ;;
+  plan)
+    echo "[WORKER] MODE=plan LANG=${LANG} SHARD_LIST=${SHARD_LIST} COUNTS_DIR=${COUNTS_DIR} OUT=${PLAN_FILE}"
+    python3 -u plan.py "${LANG}" --shard-list "${SHARD_LIST}" --counts-dir "${COUNTS_DIR}" --out "${PLAN_FILE}"
+    ;;
+  concat)
+    echo "[WORKER] MODE=concat SAMPLES_DIR=${SAMPLES_DIR}"
+    mkdir -p "${SAMPLES_DIR}"
+    cat "${SAMPLES_DIR}"/*.jsonl > "${PWD}/${LANG}_samples.jsonl"
+    echo "[WORKER] Concatenated to ${PWD}/${LANG}_samples.jsonl"
+    ;;
+  *)
+    echo "Unknown MODE=${MODE}" >&2
+    exit 2
+    ;;
+esac
