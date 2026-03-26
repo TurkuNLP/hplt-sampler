@@ -86,6 +86,18 @@ By default the pipeline samples from all available shards. Use `--wds` to restri
 
 HPLT v3 shards cover WDS scores 5–10. Not all languages have shards at every score level; an empty shard list will abort with an error.
 
+**Sampling is proportional to document count across all selected shards.** If WDS-9 contains 99× more documents than WDS-10, the sample will reflect that ratio — you get a representative random draw from the combined tier, not equal representation per score. To sample each WDS score equally, run the pipeline separately per score, renaming the output between runs, for example like this:
+
+```
+sbatch sl-orchestrator eng_Latn --wds 9
+# wait for completion, then:
+mv eng_Latn_samples.jsonl eng_Latn_wds9_samples.jsonl
+sbatch sl-orchestrator eng_Latn --wds 10
+# wait for completion, then:
+mv eng_Latn_samples.jsonl eng_Latn_wds10_samples.jsonl
+cat eng_Latn_wds9_samples.jsonl eng_Latn_wds10_samples.jsonl > eng_Latn_equal_samples.jsonl
+```
+
 ## Notes on resource limits
 
 - Worker (`sl-hplt-sampler`) headers request: `mem=32G`, `time=3:00:00` (per array task).
