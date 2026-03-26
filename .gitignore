@@ -4,3 +4,4 @@ counts/*
 shard_list*.txt
 *plan.jsonl
 *test.jsonl
+hplt-sampler.conf

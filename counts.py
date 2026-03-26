@@ -8,6 +8,9 @@ import random
 import requests
 import zstandard as zstd
 
+MAX_LINE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 def count_lines_from_url(url, timeout):
     count = 0
     buffer = b""
@@ -22,6 +25,13 @@ def count_lines_from_url(url, timeout):
                 if not chunk:
                     break
                 buffer += chunk
+                if len(buffer) > MAX_LINE_BYTES and b"\n" not in buffer:
+                    print(
+                        f"[COUNT] WARNING: oversized record (>{MAX_LINE_BYTES // 1024 // 1024} MB), counting and discarding",
+                        file=sys.stderr,
+                    )
+                    count += 1
+                    buffer = b""
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
                     if line.strip():
@@ -35,6 +45,7 @@ def count_lines_from_url(url, timeout):
             except Exception:
                 pass
     return count
+
 
 def main():
     p = argparse.ArgumentParser(description="Count non-empty lines in a zstd-compressed shard and write per-shard JSON count.")
@@ -100,8 +111,8 @@ def main():
         print(f"[COUNT] {err}; retrying in {sleep_for:.1f}s (attempt {attempt}/{args.retries})", file=sys.stderr)
         time.sleep(sleep_for)
 
-    # should not reach here
     return 2
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,0 +1,23 @@
+# Copy this file to hplt-sampler.conf and fill in the values.
+# hplt-sampler.conf is gitignored and never committed.
+
+# REQUIRED: Your Slurm project account (e.g. project_462000999).
+ACCOUNT=""
+
+# REQUIRED: Slurm partition for the orchestrator job (long-running polling job).
+ORCHESTRATOR_PARTITION="small"
+
+# REQUIRED: Slurm partition for worker array jobs (counts, plan, sample, concat).
+WORKER_PARTITION="small"
+
+# OPTIONAL: Shell command(s) to activate the Python environment in worker jobs.
+# Leave empty if `requests` and `zstandard` are already available (pip install --user).
+# Verify a lighter module works on your system before using a heavy one.
+# Example for LUMI (pytorch always works; find a lighter alternative if possible):
+#   MODULE_LOAD_CMD="module use /appl/local/csc/modulefiles && module load pytorch"
+MODULE_LOAD_CMD=""
+
+# OPTIONAL: Override the auto-computed BATCH size (max array tasks per submission).
+# The orchestrator picks a default based on the detected system and partition.
+# Increase if your quota allows more parallel jobs; decrease if you hit queue limits.
+# BATCH=100

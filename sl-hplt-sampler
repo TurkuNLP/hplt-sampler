@@ -1,8 +1,12 @@
 #!/bin/bash
 
+# NOTE: Edit --account and --partition below for your system,
+# OR let the orchestrator override them when submitting this worker.
+# See hplt-sampler.conf.example for configuration.
+
 #SBATCH --job-name=hplt_sampler
-#SBATCH --account=project_462000999
-#SBATCH --partition=small
+#SBATCH --account=YOUR_ACCOUNT_HERE
+#SBATCH --partition=YOUR_PARTITION_HERE
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
 #SBATCH --nodes=1
@@ -26,12 +30,20 @@ rm -f "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.out" || true
 ln -s "array_${ARR_JOB}_${ARR_TASK}.err" "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.err" || true
 ln -s "array_${ARR_JOB}_${ARR_TASK}.out" "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.out" || true
 
-LANG="${LANG:-eng_Latn}"
-SHARD_LIST="${SHARD_LIST:-${PWD}/shard_list_${LANG}.txt}"
+HPLT_LANG="${HPLT_LANG:-eng_Latn}"
+SHARD_LIST="${SHARD_LIST:-${PWD}/shard_list_${HPLT_LANG}.txt}"
 MODE="${MODE:-counts}"
-PLAN_FILE="${PLAN_FILE:-${PWD}/${LANG}_plan.jsonl}"
+PLAN_FILE="${PLAN_FILE:-${PWD}/${HPLT_LANG}_plan.jsonl}"
 COUNTS_DIR="${COUNTS_DIR:-${PWD}/counts}"
 SAMPLES_DIR="${SAMPLES_DIR:-${PWD}/samples}"
+
+# load optional Python environment (set MODULE_LOAD_CMD in hplt-sampler.conf)
+CONFIG="${PWD}/hplt-sampler.conf"
+# shellcheck source=/dev/null
+[[ -f "${CONFIG}" ]] && source "${CONFIG}"
+if [[ -n "${MODULE_LOAD_CMD:-}" ]]; then
+  eval "${MODULE_LOAD_CMD}"
+fi
 
 if [ "$MODE" != "plan" ] && [ "$MODE" != "concat" ]; then
   if [ -z "${SHARD_LIST:-}" ] || [ ! -r "${SHARD_LIST:-}" ]; then
@@ -47,28 +59,24 @@ if [ "$MODE" != "plan" ] && [ "$MODE" != "concat" ]; then
   fi
 fi
 
-module purge > /dev/null 2>&1 || true
-module use /appl/local/csc/modulefiles > /dev/null 2>&1 || true
-module load pytorch  > /dev/null 2>&1 || true
-
 case "$MODE" in
   counts)
-    echo "[WORKER] MODE=counts LANG=${LANG} SHARD=${SHARD_URL}"
-    python3 -u counts.py "$LANG" "$SHARD_URL" --counts-dir "$COUNTS_DIR"
+    echo "[WORKER] MODE=counts LANG=${HPLT_LANG} SHARD=${SHARD_URL}"
+    python3 -u counts.py "$HPLT_LANG" "$SHARD_URL" --counts-dir "$COUNTS_DIR"
     ;;
   sample)
-    echo "[WORKER] MODE=sample LANG=${LANG} SHARD=${SHARD_URL} PLAN=${PLAN_FILE}"
-    python3 -u sample.py "$LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
+    echo "[WORKER] MODE=sample LANG=${HPLT_LANG} SHARD=${SHARD_URL} PLAN=${PLAN_FILE}"
+    python3 -u sample.py "$HPLT_LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
     ;;
   plan)
-    echo "[WORKER] MODE=plan LANG=${LANG} SHARD_LIST=${SHARD_LIST} COUNTS_DIR=${COUNTS_DIR} OUT=${PLAN_FILE}"
-    python3 -u plan.py "${LANG}" --shard-list "${SHARD_LIST}" --counts-dir "${COUNTS_DIR}" --out "${PLAN_FILE}"
+    echo "[WORKER] MODE=plan LANG=${HPLT_LANG} SHARD_LIST=${SHARD_LIST} COUNTS_DIR=${COUNTS_DIR} OUT=${PLAN_FILE}"
+    python3 -u plan.py "${HPLT_LANG}" --shard-list "${SHARD_LIST}" --counts-dir "${COUNTS_DIR}" --out "${PLAN_FILE}"
     ;;
   concat)
     echo "[WORKER] MODE=concat SAMPLES_DIR=${SAMPLES_DIR}"
     mkdir -p "${SAMPLES_DIR}"
-    cat "${SAMPLES_DIR}"/*.jsonl > "${PWD}/${LANG}_samples.jsonl"
-    echo "[WORKER] Concatenated to ${PWD}/${LANG}_samples.jsonl"
+    cat "${SAMPLES_DIR}"/*.jsonl > "${PWD}/${HPLT_LANG}_samples.jsonl"
+    echo "[WORKER] Concatenated to ${PWD}/${HPLT_LANG}_samples.jsonl"
     ;;
   *)
     echo "Unknown MODE=${MODE}" >&2

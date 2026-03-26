@@ -8,6 +8,9 @@ import random
 import requests
 import zstandard as zstd
 
+MAX_LINE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 def stream_sample(url, n_take, timeout):
     reservoir = []
     total_seen = 0
@@ -23,6 +26,13 @@ def stream_sample(url, n_take, timeout):
                 if not chunk:
                     break
                 buf += chunk
+                if len(buf) > MAX_LINE_BYTES and b"\n" not in buf:
+                    print(
+                        f"[SAMPLE] WARNING: oversized record (>{MAX_LINE_BYTES // 1024 // 1024} MB), skipping",
+                        file=sys.stderr,
+                    )
+                    buf = b""
+                    total_seen += 1
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     if not line.strip():
@@ -52,8 +62,9 @@ def stream_sample(url, n_take, timeout):
                 pass
     return reservoir, total_seen
 
+
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description="Reservoir-sample documents from a zstd-compressed shard.")
     p.add_argument("lang")
     p.add_argument("shard_url")
     p.add_argument("--plan", default=None, help="Path to plan jsonl (default: <scriptdir>/<lang>_plan.jsonl)")
@@ -95,16 +106,18 @@ def main():
     if n_take is None:
         print(f"[SAMPLE] No plan entry found for shard {fname}", file=sys.stderr)
         return 3
-    if n_take <= 0:
-        print(f"[SAMPLE] n_take=0 for {fname}, nothing to do")
-        return 0
 
     outfile = os.path.join(outdir, f"{fname}.jsonl")
-    tmpfile = outfile + ".tmp"
     if os.path.exists(outfile):
         print(f"[SAMPLE] {outfile} exists, skipping")
         return 0
 
+    if n_take <= 0:
+        print(f"[SAMPLE] n_take=0 for {fname}, writing empty output")
+        open(outfile, "w", encoding="utf-8").close()
+        return 0
+
+    tmpfile = outfile + ".tmp"
     attempt = 0
     while attempt <= args.retries:
         try:
@@ -143,6 +156,7 @@ def main():
         time.sleep(sleep_for)
 
     return 4
+
 
 if __name__ == "__main__":
     sys.exit(main())
