@@ -8,6 +8,8 @@ Orchestration runs inside a Slurm job so polling/sleeps survive disconnects.
 
 Currently verified with HPLT v3 on LUMI; designed to be portable across CSC systems via `hplt-sampler.conf`.
 
+> **This tool is intended for production-scale corpus sampling.** HPLT v3 is one of the largest generally available multilingual datasets; running the pipeline without a WDS filter on a large language streams every shard and can consume hundreds of CPU hours. The intended use case is large, representative samples for academic use — where HPLT's quality stratification and proportionality guarantees matter. If you just need a few hundred or thousand documents to inspect, unpack an appropriate shard directly: `zstd -d <shard>.jsonl.zst | head -n 1000` etc.
+
 ## Prerequisites
 
 - Python 3 with `zstandard` (`requests` is system-provided on LUMI):
@@ -47,7 +49,7 @@ The `#SBATCH --account` and `#SBATCH --partition` directives at the top of `sl-o
 
 Per-shard **counts** are written to `counts/<LANG>/` at the project root and persist across runs — a shard that has already been counted is skipped automatically. Each count file records the shard URL, document count, and fetch timestamp, so corpus provenance and date are always traceable. `counts/` is gitignored.
 
-> **Future:** once a shared `projappl/` path is available on LUMI, set `COUNTS_DIR` in `hplt-sampler.conf` to point there so all group members share a single counts cache and avoid redundant recomputation.
+> **Future:** once a shared `projappl/` path is available on LUMI, set `COUNTS_DIR` in `hplt-sampler.conf` to point there so all LUMI users share a single counts cache and avoid redundant recomputation.
 
 All other run outputs land in a per-run directory `results-<LANG>-<WDS>/` (e.g. `results-eng_Latn-9-10/`, `results-eng_Latn-all/`), created at launch. The directory is gitignored by `results-*/`.
 
@@ -118,6 +120,8 @@ To change the global sample target, run `plan.py` directly (it waits for counts 
 python3 plan.py <LANG> --n-samples 200000 --shard-list ./results-<LANG>-<WDS>/shard_list.txt --counts-dir ./counts/<LANG> --out ./results-<LANG>-<WDS>/plan.jsonl
 ```
 
+Alternatively, you can just change the hard-coded sample parameter (`--n-samples`) from the `argparser`'s defaults (around the top of `plan.py`).
+
 Debug a single shard:
 
 ```
@@ -125,7 +129,13 @@ python3 counts.py <LANG> <SHARD_URL> --counts-dir ./counts/<LANG>
 python3 sample.py <LANG> <SHARD_URL> --plan ./results-<LANG>-<WDS>/plan.jsonl --outdir ./results-<LANG>-<WDS>/samples
 ```
 
-Verify results after a run:
+Verify a successful run (per-shard samples are deleted after concat, so just count lines):
+
+```
+wc -l results-<LANG>-<WDS>/samples.jsonl   # should match the planned total in plan.jsonl
+```
+
+`check.py` does granular per-shard verification against the plan, but requires the per-shard `samples/` directory — useful when the run failed before concat and the directory was preserved:
 
 ```
 python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir ./results-<LANG>-<WDS>/samples
@@ -137,3 +147,13 @@ python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir .
 - `plan.py` matches expected shards from `shard_list` and waits for all counts.
 - The orchestrator batches array submissions to respect partition limits; monitor with `squeue` and `slurm-logs/`.
 - Ensure Python deps are available in the job environment (pip or `MODULE_LOAD_CMD` in conf).
+
+## TODO / known limitations
+
+- **Verify on Puhti and Mahti.** Presets exist but are unverified; `MODULE_LOAD_CMD` and BATCH values may need adjustment. Update presets and remove UNVERIFIED notices once tested.
+- **Multi-version support.** Currently hardcoded to HPLT v3 (`/three/` in the map URL). Adding v2 and v4 (when available) would require parameterising the corpus version — likely a `--corpus` flag or a conf key that selects the base URL.
+- **Shared counts cache.** Per-shard counts should be stable per corpus version and cheap to share. A hosted or group-shared `counts/` directory (e.g. in LUMI `projappl/`) would eliminate redundant recomputation across users. *Pending: check whether a shared path can be provisioned under the project allocation.*
+- **Roihu support.** Preset stub exists; fill in once Roihu becomes generally available.
+- **Local filesystem access on LUMI.** HPLT data lives in `projappl/`; on LUMI, sampling could read directly from the filesystem instead of streaming over HTTP, removing the main bottleneck (HTTP is brittle with these volumes). Needs a flag or auto-detection to switch between URL and local path modes.
+- **`--n-samples` on the orchestrator CLI.** Currently only configurable by running `plan.py` manually; exposing it as `sl-orchestrator --n-samples N` would avoid the manual step.
+- **Dry-run mode.** A `--dry-run` flag that fetches the shard list, prints shard count and estimated resource usage, and exits without submitting any jobs would help users sanity-check scope before committing quota.

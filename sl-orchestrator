@@ -9,8 +9,8 @@
 # Worker jobs (counts, plan, sample, concat) read WORKER_PARTITION from hplt-sampler.conf.
 
 #SBATCH --job-name=orchestrator
-#SBATCH --account=project_462000999
-#SBATCH --partition=small-g
+#SBATCH --account=YOUR_ACCOUNT_HERE
+#SBATCH --partition=YOUR_PARTITION_HERE
 #SBATCH --mem=8G
 #SBATCH --time=72:00:00
 #SBATCH --nodes=1
