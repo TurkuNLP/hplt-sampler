@@ -9,7 +9,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Aggregate per-shard counts and write a proportional sampling plan.")
     parser.add_argument("lang")
-    parser.add_argument("--n-samples", type=int, default=100000)
+    parser.add_argument("--n-samples", type=int, default=1000000)
     parser.add_argument("--shard-list", default=None)
     parser.add_argument("--counts-dir", default=None)
     parser.add_argument("--out", default=None)
@@ -18,7 +18,7 @@ def main():
 
     root = os.path.dirname(__file__)
     shard_list = args.shard_list or os.path.join(os.getcwd(), f"shard_list_{args.lang}.txt")
-    counts_dir = args.counts_dir or os.path.join(root, "counts")
+    counts_dir = args.counts_dir or os.path.join(root, "counts", args.lang)
     out_file = args.out or os.path.join(root, f"{args.lang}_plan.jsonl")
     n_samples = args.n_samples
     poll = args.poll_interval

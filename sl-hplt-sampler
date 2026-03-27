@@ -31,11 +31,13 @@ ln -s "array_${ARR_JOB}_${ARR_TASK}.err" "slurm-logs/current_${SLURM_JOB_NAME}_$
 ln -s "array_${ARR_JOB}_${ARR_TASK}.out" "slurm-logs/current_${SLURM_JOB_NAME}_${ARR_TASK}.out" || true
 
 HPLT_LANG="${HPLT_LANG:-eng_Latn}"
-SHARD_LIST="${SHARD_LIST:-${PWD}/shard_list_${HPLT_LANG}.txt}"
+RUNDIR="${RUNDIR:-${PWD}/results-${HPLT_LANG}-all}"
+SHARD_LIST="${SHARD_LIST:-${RUNDIR}/shard_list.txt}"
 MODE="${MODE:-counts}"
-PLAN_FILE="${PLAN_FILE:-${PWD}/${HPLT_LANG}_plan.jsonl}"
-COUNTS_DIR="${COUNTS_DIR:-${PWD}/counts}"
-SAMPLES_DIR="${SAMPLES_DIR:-${PWD}/samples}"
+PLAN_FILE="${PLAN_FILE:-${RUNDIR}/plan.jsonl}"
+COUNTS_DIR="${COUNTS_DIR:-${PWD}/counts/${HPLT_LANG}}"
+SAMPLES_DIR="${SAMPLES_DIR:-${RUNDIR}/samples}"
+FINAL_FILE="${FINAL_FILE:-${RUNDIR}/samples.jsonl}"
 
 # load optional Python environment (set MODULE_LOAD_CMD in hplt-sampler.conf)
 CONFIG="${PWD}/hplt-sampler.conf"
@@ -75,8 +77,14 @@ case "$MODE" in
   concat)
     echo "[WORKER] MODE=concat SAMPLES_DIR=${SAMPLES_DIR}"
     mkdir -p "${SAMPLES_DIR}"
-    cat "${SAMPLES_DIR}"/*.jsonl > "${PWD}/${HPLT_LANG}_samples.jsonl"
-    echo "[WORKER] Concatenated to ${PWD}/${HPLT_LANG}_samples.jsonl"
+    cat "${SAMPLES_DIR}"/*.jsonl > "${FINAL_FILE}"
+    if [[ -s "${FINAL_FILE}" ]]; then
+      rm -rf "${SAMPLES_DIR}"
+      echo "[WORKER] Concatenated to ${FINAL_FILE} and removed per-shard samples"
+    else
+      echo "[WORKER] ERROR: ${FINAL_FILE} is empty; keeping ${SAMPLES_DIR} for inspection" >&2
+      exit 1
+    fi
     ;;
   *)
     echo "Unknown MODE=${MODE}" >&2

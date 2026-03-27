@@ -32,25 +32,31 @@ Then set `ACCOUNT` in `hplt-sampler.conf`. If no preset exists for your system, 
 
 **Alternatively**, run the orchestrator directly from the terminal without a conf file and it will prompt you interactively. On LUMI the system is auto-detected and preset defaults are pre-filled; on other systems it prompts with blanks.
 
-Also edit the `#SBATCH --account` and `#SBATCH --partition` directives at the top of `sl-orchestrator` and `sl-hplt-sampler` to match your system — or override them on the `sbatch` command line (see below).
+The `#SBATCH --account` and `#SBATCH --partition` directives at the top of `sl-orchestrator` (and `sl-hplt-sampler`) are parsed by Slurm before the script runs, so they **cannot** be set from `hplt-sampler.conf`. Set them by either editing the directives directly in the scripts, or by passing `--account=X --partition=Y` on the `sbatch` command line. Worker partition (for the array jobs) is read from `WORKER_PARTITION` in `hplt-sampler.conf` and works normally.
 
 ## Key scripts
 
 - `sl-orchestrator` — submit this (`sbatch`) to run the whole pipeline (submits worker arrays and dependent jobs).
 - `sl-hplt-sampler` — worker invoked by orchestrator; modes: counts, plan, sample, concat.
-- `counts.py` — per-shard counting (writes `counts/<shard>.json`).
-- `plan.py` — aggregator that waits for counts and writes `<LANG>_plan.jsonl`.
-- `sample.py` — per-shard sampler that reads plan and writes `samples/<shard>.jsonl`.
+- `counts.py` — per-shard counting (writes `<rundir>/counts/<shard>.json`).
+- `plan.py` — aggregator that waits for counts and writes `<rundir>/plan.jsonl`.
+- `sample.py` — per-shard sampler that reads plan and writes `<rundir>/samples/<shard>.jsonl`.
 - `check.py` — post-run verification: reports missing or mismatched sample files.
 
-## Main outputs (relative to project dir)
+## Main outputs
 
-- shard list: `shard_list_<LANG>.txt`
-- per-shard counts: `counts/<shard_filename>.json`
-- plan file: `<LANG>_plan.jsonl`
-- per-shard samples: `samples/<shard_filename>.jsonl`
-- final concatenated samples: `<LANG>_samples.jsonl`
-- logs: `slurm-logs/`
+Per-shard **counts** are written to `counts/<LANG>/` at the project root and persist across runs — a shard that has already been counted is skipped automatically. Each count file records the shard URL, document count, and fetch timestamp, so corpus provenance and date are always traceable. `counts/` is gitignored.
+
+> **Future:** once a shared `projappl/` path is available on LUMI, set `COUNTS_DIR` in `hplt-sampler.conf` to point there so all group members share a single counts cache and avoid redundant recomputation.
+
+All other run outputs land in a per-run directory `results-<LANG>-<WDS>/` (e.g. `results-eng_Latn-9-10/`, `results-eng_Latn-all/`), created at launch. The directory is gitignored by `results-*/`.
+
+- per-shard counts: `counts/<LANG>/<shard_filename>.json` (shared, persistent)
+- shard list: `results-<LANG>-<WDS>/shard_list.txt`
+- plan file: `results-<LANG>-<WDS>/plan.jsonl`
+- per-shard samples: `results-<LANG>-<WDS>/samples/<shard_filename>.jsonl`
+- final concatenated samples: `results-<LANG>-<WDS>/samples.jsonl`
+- logs: `slurm-logs/` (at project root, shared across runs)
 
 ## Run the full pipeline (recommended)
 
@@ -86,17 +92,17 @@ By default the pipeline samples from all available shards. Use `--wds` to restri
 
 HPLT v3 shards cover WDS scores 5–10. Not all languages have shards at every score level; an empty shard list will abort with an error.
 
-**Sampling is proportional to document count across all selected shards.** If WDS-9 contains 99× more documents than WDS-10, the sample will reflect that ratio — you get a representative random draw from the combined tier, not equal representation per score. To sample each WDS score equally, run the pipeline separately per score, renaming the output between runs, for example like this:
+**Sampling is proportional to document count across all selected shards.** If WDS-9 contains 99× more documents than WDS-10, the sample will reflect that ratio — you get a representative random draw from the combined tier, not equal representation per score. To sample each WDS score equally, run the pipeline separately per score, for example like this:
 
 ```
 sbatch sl-orchestrator eng_Latn --wds 9
 # wait for completion, then:
-mv eng_Latn_samples.jsonl eng_Latn_wds9_samples.jsonl
 sbatch sl-orchestrator eng_Latn --wds 10
 # wait for completion, then:
-mv eng_Latn_samples.jsonl eng_Latn_wds10_samples.jsonl
-cat eng_Latn_wds9_samples.jsonl eng_Latn_wds10_samples.jsonl > eng_Latn_equal_samples.jsonl
+cat results-eng_Latn-9/samples.jsonl results-eng_Latn-10/samples.jsonl > eng_Latn_equal_samples.jsonl
 ```
+
+Each run writes to its own `results-eng_Latn-<WDS>/` directory, so no renaming is needed.
 
 ## Notes on resource limits
 
@@ -109,20 +115,20 @@ cat eng_Latn_wds9_samples.jsonl eng_Latn_wds10_samples.jsonl > eng_Latn_equal_sa
 To change the global sample target, run `plan.py` directly (it waits for counts if needed):
 
 ```
-python3 plan.py <LANG> --n-samples 200000 --shard-list ./shard_list_<LANG>.txt --counts-dir ./counts --out ./<LANG>_plan.jsonl
+python3 plan.py <LANG> --n-samples 200000 --shard-list ./results-<LANG>-<WDS>/shard_list.txt --counts-dir ./counts/<LANG> --out ./results-<LANG>-<WDS>/plan.jsonl
 ```
 
 Debug a single shard:
 
 ```
-python3 counts.py <LANG> <SHARD_URL> --counts-dir ./counts
-python3 sample.py <LANG> <SHARD_URL> --plan ./<LANG>_plan.jsonl --outdir ./samples
+python3 counts.py <LANG> <SHARD_URL> --counts-dir ./counts/<LANG>
+python3 sample.py <LANG> <SHARD_URL> --plan ./results-<LANG>-<WDS>/plan.jsonl --outdir ./results-<LANG>-<WDS>/samples
 ```
 
 Verify results after a run:
 
 ```
-python3 check.py <LANG>
+python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir ./results-<LANG>-<WDS>/samples
 ```
 
 ## Robustness notes

@@ -1,7 +1,5 @@
 slurm-logs/
-samples/*
-counts/*
-shard_list*.txt
-*plan.jsonl
-*test.jsonl
+counts/
+results-*/
 hplt-sampler.conf
+test.jsonl

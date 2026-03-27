@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import random
+from datetime import datetime, timezone
 
 import requests
 import zstandard as zstd
@@ -62,7 +63,7 @@ def main():
     fname = url.split("/")[-1]
 
     script_dir = os.path.dirname(__file__)
-    outdir = args.counts_dir or os.path.join(script_dir, "counts")
+    outdir = args.counts_dir or os.path.join(script_dir, "counts", lang)
     os.makedirs(outdir, exist_ok=True)
     outfile = os.path.join(outdir, f"{fname}.json")
     tmpfile = outfile + ".tmp"
@@ -82,8 +83,9 @@ def main():
             print(f"[COUNT] Found {count} non-empty lines in {fname}")
 
             # atomic write
+            fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             with open(tmpfile, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"filename": fname, "url": url, "count": count}) + "\n")
+                fh.write(json.dumps({"filename": fname, "url": url, "count": count, "fetched_at": fetched_at}) + "\n")
             os.replace(tmpfile, outfile)
             print(f"[COUNT] Saved {fname} -> {outfile}")
             return 0

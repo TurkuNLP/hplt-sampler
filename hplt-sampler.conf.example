@@ -4,8 +4,9 @@
 # REQUIRED: Your Slurm project account (e.g. project_462000999).
 ACCOUNT=""
 
-# REQUIRED: Slurm partition for the orchestrator job (long-running polling job).
-ORCHESTRATOR_PARTITION="small"
+# NOTE: The orchestrator's own partition cannot be set here — #SBATCH directives
+# are parsed by Slurm before this file is read. Edit #SBATCH --partition in
+# sl-orchestrator directly, or pass --partition=X on the sbatch command line.
 
 # REQUIRED: Slurm partition for worker array jobs (counts, plan, sample, concat).
 WORKER_PARTITION="small"
