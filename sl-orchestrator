@@ -162,6 +162,33 @@ sanitize_jobid() {
   fi
 }
 
+# sbatch wrapper that retries on transient socket/timeout errors
+sbatch_with_retry() {
+  local attempt=0 max_attempts=5 delay=15 out rc
+  while (( attempt < max_attempts )); do
+    (( attempt++ ))
+    out=$(sbatch "$@" 2>&1)
+    rc=$?
+    if (( rc == 0 )); then
+      echo "$out"
+      return 0
+    fi
+    if echo "$out" | grep -qi "socket timed out\|connection timed out"; then
+      echo "[ORCH] sbatch transient error (attempt ${attempt}/${max_attempts}): ${out}" >&2
+      if (( attempt < max_attempts )); then
+        echo "[ORCH] Retrying in ${delay}s..." >&2
+        sleep "${delay}"
+        delay=$(( delay * 2 ))
+      fi
+    else
+      echo "$out" >&2
+      return "${rc}"
+    fi
+  done
+  echo "[ORCH] sbatch failed after ${max_attempts} attempts" >&2
+  return 1
+}
+
 last_counts_jobid=""
 echo "[ORCH] Submitting counts in batches (BATCH=${BATCH}) for ${NUMFILES} shards"
 for (( s=0; s<NUMFILES; s+=BATCH )); do
@@ -178,7 +205,7 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   done
 
   echo "[ORCH] Submitting counts array ${s}-${e}"
-  raw_id=$(sbatch --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",MODE=counts "${WORKER}")
+  raw_id=$(sbatch_with_retry --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",MODE=counts "${WORKER}")
   jid=$(sanitize_jobid "${raw_id}")
   if [ -z "${jid}" ]; then
     echo "[ORCH] Failed to obtain valid counts job id from sbatch output: '${raw_id}'" >&2
@@ -190,7 +217,7 @@ done
 
 # submit plan job dependent on last counts batch finishing
 echo "[ORCH] Submitting plan job dependent on ${last_counts_jobid}"
-raw_plan_id=$(sbatch --parsable --job-name="${JOB_PLAN}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_counts_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=plan "${WORKER}")
+raw_plan_id=$(sbatch_with_retry --parsable --job-name="${JOB_PLAN}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_counts_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=plan "${WORKER}")
 plan_jobid=$(sanitize_jobid "${raw_plan_id}")
 if [ -z "${plan_jobid}" ]; then
   echo "[ORCH] Failed to obtain valid plan job id from sbatch output: '${raw_plan_id}'" >&2
@@ -254,12 +281,12 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   case $? in
     0)
       # plan job exists in controller -> safe to pass as dependency
-      raw_sample_id=$(sbatch --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}" 2>&1)
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}")
       ;;
     1)
       # plan finished successfully and was purged from controller -> submit without dependency
       echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
-      raw_sample_id=$(sbatch --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}" 2>&1)
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}")
       ;;
     *)
       echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2
@@ -283,11 +310,11 @@ echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
 check_job_for_dependency "${last_sample_jobid}"
 case $? in
   0)
-    raw_concat_id=$(sbatch --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}" 2>&1)
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   1)
     echo "[ORCH] Sample batch ${last_sample_jobid} already finished (accounting OK); submitting concat without dependency"
-    raw_concat_id=$(sbatch --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}" 2>&1)
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   *)
     echo "[ORCH] Sample job ${last_sample_jobid} not found or failed; aborting" >&2
