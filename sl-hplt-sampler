@@ -53,7 +53,8 @@ if [ "$MODE" != "plan" ] && [ "$MODE" != "concat" ]; then
     exit 1
   fi
 
-  idx=$((SLURM_ARRAY_TASK_ID + 1))
+  OFFSET="${OFFSET:-0}"
+  idx=$((OFFSET + SLURM_ARRAY_TASK_ID + 1))
   SHARD_URL=$(sed -n "${idx}p" "$SHARD_LIST")
   if [ -z "${SHARD_URL:-}" ]; then
     echo "No shard URL at line ${idx} in ${SHARD_LIST}" >&2

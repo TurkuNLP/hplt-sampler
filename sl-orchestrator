@@ -204,8 +204,8 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
     sleep 30
   done
 
-  echo "[ORCH] Submitting counts array ${s}-${e}"
-  raw_id=$(sbatch_with_retry --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",MODE=counts "${WORKER}")
+  echo "[ORCH] Submitting counts array ${s}-${e} (tasks 0-$((e - s)))"
+  raw_id=$(sbatch_with_retry --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",OFFSET=${s},MODE=counts "${WORKER}")
   jid=$(sanitize_jobid "${raw_id}")
   if [ -z "${jid}" ]; then
     echo "[ORCH] Failed to obtain valid counts job id from sbatch output: '${raw_id}'" >&2
@@ -276,17 +276,17 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
     sleep 30
   done
 
-  echo "[ORCH] Submitting sample array ${s}-${e} (depends on plan ${plan_jobid})"
+  echo "[ORCH] Submitting sample array ${s}-${e} (tasks 0-$((e - s)), depends on plan ${plan_jobid})"
   check_job_for_dependency "${plan_jobid}"
   case $? in
     0)
       # plan job exists in controller -> safe to pass as dependency
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     1)
       # plan finished successfully and was purged from controller -> submit without dependency
       echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="${s}-${e}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     *)
       echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2
