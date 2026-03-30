@@ -6,7 +6,7 @@ End-to-end pipeline to proportionally sample documents from the sharded HPLT v3 
 Stages: (1) per-shard counting (parallel), (2) global planning (single job), (3) per-shard sampling (parallel), (4) final concatenation.
 Orchestration runs inside a Slurm job so polling/sleeps survive disconnects.
 
-Currently verified with HPLT v3 on LUMI; designed to be portable across CSC systems via `hplt-sampler.conf`.
+Verified with HPLT v3 on LUMI, Puhti, and Mahti.
 
 > **This tool is intended for production-scale corpus sampling.** HPLT v3 is one of the largest generally available multilingual datasets; running the pipeline without a WDS filter on a large language streams every shard and can consume hundreds of CPU hours. The intended use case is large, representative samples for academic use — where HPLT's quality stratification and proportionality guarantees matter. If you just need a few hundred or thousand documents to inspect, unpack an appropriate shard directly: `zstd -d <shard>.jsonl.zst | head -n 1000` etc.
 
@@ -32,7 +32,7 @@ Then set `ACCOUNT` in `hplt-sampler.conf`. If no preset exists for your system, 
 
 `hplt-sampler.conf` is gitignored and never committed.
 
-**Alternatively**, run the orchestrator directly from the terminal without a conf file and it will prompt you interactively. On LUMI the system is auto-detected and preset defaults are pre-filled; on other systems it prompts with blanks.
+**Alternatively**, run the orchestrator directly from the terminal without a conf file and it will prompt you interactively. On LUMI, Puhti, and Mahti the system is auto-detected and preset defaults are pre-filled; on other systems it prompts with blanks.
 
 The `#SBATCH --account` and `#SBATCH --partition` directives at the top of `sl-orchestrator` (and `sl-hplt-sampler`) are parsed by Slurm before the script runs, so they **cannot** be set from `hplt-sampler.conf`. Set them by either editing the directives directly in the scripts, or by passing `--account=X --partition=Y` on the `sbatch` command line. Worker partition (for the array jobs) is read from `WORKER_PARTITION` in `hplt-sampler.conf` and works normally.
 
@@ -56,7 +56,7 @@ All other run outputs land in a per-run directory `results-<LANG>-<WDS>/` (e.g. 
 - per-shard counts: `counts/<LANG>/<shard_filename>.json` (shared, persistent)
 - shard list: `results-<LANG>-<WDS>/shard_list.txt`
 - plan file: `results-<LANG>-<WDS>/plan.jsonl`
-- per-shard samples: `results-<LANG>-<WDS>/samples/<shard_filename>.jsonl`
+- per-shard samples: `results-<LANG>-<WDS>/samples/<shard_filename>.jsonl` (temporary; deleted after successful concat)
 - final concatenated samples: `results-<LANG>-<WDS>/samples.jsonl`
 - logs: `slurm-logs/` (at project root, shared across runs)
 
@@ -150,7 +150,7 @@ python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir .
 
 ## TODO / known limitations
 
-- **Verify on Puhti and Mahti.** Presets exist but are unverified; `MODULE_LOAD_CMD` and BATCH values may need adjustment. Update presets and remove UNVERIFIED notices once tested.
+- **Verify on Puhti and Mahti with large languages.** Basic functionality confirmed; large-language runs (English-scale, 1000+ shards) have not been fully exercised on these systems.
 - **Multi-version support.** Currently hardcoded to HPLT v3 (`/three/` in the map URL). Adding v2 and v4 (when available) would require parameterising the corpus version — likely a `--corpus` flag or a conf key that selects the base URL.
 - **Shared counts cache.** Per-shard counts should be stable per corpus version and cheap to share. A hosted or group-shared `counts/` directory (e.g. in LUMI `projappl/`) would eliminate redundant recomputation across users. *Pending: check whether a shared path can be provisioned under the project allocation.*
 - **Roihu support.** Preset stub exists; fill in once Roihu becomes generally available.
