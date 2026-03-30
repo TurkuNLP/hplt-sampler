@@ -277,8 +277,8 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   done
 
   echo "[ORCH] Submitting sample array ${s}-${e} (tasks 0-$((e - s)), depends on plan ${plan_jobid})"
-  check_job_for_dependency "${plan_jobid}"
-  case $? in
+  _dep_status=0; check_job_for_dependency "${plan_jobid}" || _dep_status=$?
+  case $_dep_status in
     0)
       # plan job exists in controller -> safe to pass as dependency
       raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
@@ -307,8 +307,8 @@ done
 
 # submit concatenation job dependent on last sample batch
 echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
-check_job_for_dependency "${last_sample_jobid}"
-case $? in
+_dep_status=0; check_job_for_dependency "${last_sample_jobid}" || _dep_status=$?
+case $_dep_status in
   0)
     raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
