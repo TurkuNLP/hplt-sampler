@@ -40,8 +40,10 @@ mkdir -p "${RUNDIR}"
 echo "[ORCH] Run directory: ${RUNDIR}"
 
 # --- detect system (used for preset defaults and BATCH sizing) ---
-_detected_system="unknown"
-if [[ -n "${LUMI_LMOD_FAMILY_COMPILER:-}" ]]; then
+# SLURM_CLUSTER_NAME is set by Slurm inside every job; fall back to module-system
+# signals for login-node interactive use (currently only LUMI has a reliable marker).
+_detected_system="${SLURM_CLUSTER_NAME:-unknown}"
+if [[ "${_detected_system}" == "unknown" && -n "${LUMI_LMOD_FAMILY_COMPILER:-}" ]]; then
   _detected_system="lumi"
 fi
 
