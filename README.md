@@ -150,7 +150,7 @@ python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir .
 
 ## TODO / known limitations
 
-- **Verify on Puhti and Mahti with large languages.** Basic functionality confirmed; large-language runs (English-scale, 1000+ shards) have not been fully exercised on these systems.
+- **Verify on Puhti with large languages.** Basic functionality and English-scale runs (1294 shards, 1M docs) confirmed on Mahti; Puhti has only been tested with smaller languages.
 - **Multi-version support.** Currently hardcoded to HPLT v3 (`/three/` in the map URL). Adding v2 and v4 (when available) would require parameterising the corpus version — likely a `--corpus` flag or a conf key that selects the base URL.
 - **Shared counts cache.** Per-shard counts should be stable per corpus version and cheap to share. A hosted or group-shared `counts/` directory (e.g. in LUMI `projappl/`) would eliminate redundant recomputation across users. *Pending: check whether a shared path can be provisioned under the project allocation.*
 - **Roihu support.** Preset stub exists; fill in once Roihu becomes generally available.
