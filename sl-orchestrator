@@ -329,12 +329,12 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   case $_dep_status in
     0)
       # plan job exists in controller -> safe to pass as dependency
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     1)
       # plan finished successfully and was purged from controller -> submit without dependency
       echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     *)
       echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2
