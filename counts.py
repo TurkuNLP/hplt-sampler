@@ -6,8 +6,15 @@ import time
 import random
 from datetime import datetime, timezone
 
-import requests
-import zstandard as zstd
+try:  # only needed for URL shards (HPLT v3); local shards (v4 on LUMI) use shardio
+    import requests
+    import zstandard as zstd
+    NET_ERRORS = (requests.exceptions.RequestException, zstd.ZstdError)
+except ImportError:
+    requests = zstd = None
+    NET_ERRORS = ()
+
+import shardio
 
 MAX_LINE_BYTES = 50 * 1024 * 1024  # 50 MB
 
@@ -51,7 +58,7 @@ def count_lines_from_url(url, timeout):
 def main():
     p = argparse.ArgumentParser(description="Count non-empty lines in a zstd-compressed shard and write per-shard JSON count.")
     p.add_argument("lang", help="Language code (unused except for logging)")
-    p.add_argument("shard_url", help="Full URL to shard (zstd .zst stream)")
+    p.add_argument("shard_url", help="Full URL to shard (zstd .zst stream), or a local .jsonl.zst path")
     p.add_argument("--counts-dir", default=None, help="Directory to write per-shard count files (default: ./counts next to script)")
     p.add_argument("--timeout", type=int, default=60, help="HTTP request timeout (s)")
     p.add_argument("--retries", type=int, default=5, help="Number of retries on network/error")
@@ -79,20 +86,24 @@ def main():
         try:
             attempt += 1
             print(f"[COUNT] Attempt {attempt}/{args.retries} - counting lines in: {url}")
-            count = count_lines_from_url(url, timeout=args.timeout)
+            entry = {"filename": fname, "url": url}
+            if shardio.is_local(url):
+                count, method = shardio.count_local_lines(url)
+                entry["method"] = method
+            else:
+                count = count_lines_from_url(url, timeout=args.timeout)
             print(f"[COUNT] Found {count} non-empty lines in {fname}")
 
             # atomic write
-            fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            entry["count"] = count
+            entry["fetched_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             with open(tmpfile, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"filename": fname, "url": url, "count": count, "fetched_at": fetched_at}) + "\n")
+                fh.write(json.dumps(entry) + "\n")
             os.replace(tmpfile, outfile)
             print(f"[COUNT] Saved {fname} -> {outfile}")
             return 0
-        except requests.exceptions.RequestException as e:
-            err = f"network error: {e}"
-        except zstd.ZstdError as e:
-            err = f"decompression error: {e}"
+        except NET_ERRORS as e:
+            err = f"network/decompression error: {e}"
         except Exception as e:
             err = f"unexpected error: {e}"
 

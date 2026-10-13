@@ -5,7 +5,8 @@
 # Set --account and --partition for THIS job by either:
 #   (a) editing the two #SBATCH lines below directly, OR
 #   (b) overriding on the sbatch command line:
-#         sbatch --account=project_X --partition=small sl-orchestrator eng_Latn [--wds 9-10]
+#         sbatch --account=project_X --partition=small sl-orchestrator eng_Latn [--wds 9-10] \
+#           [--corpus v3|v4] [--local-root DIR] [--n-samples N]
 # Worker jobs (counts, plan, sample, concat) read WORKER_PARTITION from hplt-sampler.conf.
 
 #SBATCH --job-name=orchestrator
@@ -23,19 +24,32 @@ set -euo pipefail
 # --- argument parsing ---
 HPLT_LANG="eng_Latn"
 WDS_SPEC=""
+CORPUS="v3"
+LOCAL_ROOT=""
+N_SAMPLES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --wds) WDS_SPEC="$2"; shift 2 ;;
-    *)     HPLT_LANG="$1"; shift ;;
+    --wds)        WDS_SPEC="$2"; shift 2 ;;
+    --corpus)     CORPUS="$2"; shift 2 ;;
+    --local-root) LOCAL_ROOT="$2"; shift 2 ;;
+    --n-samples)  N_SAMPLES="$2"; shift 2 ;;
+    *)            HPLT_LANG="$1"; shift ;;
   esac
 done
+case "${CORPUS}" in
+  v3|v4) ;;
+  *) echo "[ORCH] ERROR: --corpus must be v3 or v4 (got '${CORPUS}')" >&2; exit 1 ;;
+esac
 
 ROOT="${PWD}"
 
 # --- run directory (all outputs scoped here; matched by results-*/ in .gitignore) ---
 _wds_tag="${WDS_SPEC:-all}"
 _wds_tag="${_wds_tag//,/+}"
-RUNDIR="${ROOT}/results-${HPLT_LANG}-${_wds_tag}"
+# v3 keeps its original names; other corpora are prefixed so runs and count caches never mix
+_corpus_tag=""
+[[ "${CORPUS}" != "v3" ]] && _corpus_tag="${CORPUS}-"
+RUNDIR="${ROOT}/results-${_corpus_tag}${HPLT_LANG}-${_wds_tag}"
 mkdir -p "${RUNDIR}"
 echo "[ORCH] Run directory: ${RUNDIR}"
 
@@ -92,6 +106,9 @@ if [[ -z "${ACCOUNT:-}" ]]; then
   fi
 fi
 WORKER_PARTITION="${WORKER_PARTITION:-small}"
+# WORKER_MEM (optional, conf) overrides the worker's #SBATCH --mem=32G; a per-shard reservoir
+# needs far less, and on LUMI small requested memory is billed as cores.
+WORKER_MEM="${WORKER_MEM:-}"
 
 # --- BATCH sizing (max array tasks per submission; can be overridden via BATCH= in hplt-sampler.conf) ---
 # LUMI limits from partition table (running cap − 20 headroom):
@@ -110,9 +127,19 @@ if [[ -z "${BATCH:-}" ]]; then
   echo "[ORCH] BATCH=${BATCH} (auto: ${_detected_system}:${WORKER_PARTITION})"
 fi
 
+# Shard source: v3 streams over HTTP from the HPLT map; v4 reads local files.
+# HPLT v4 has no usable public map (2026-10-13: four/clean/*.map list /three/ URLs),
+# so v4 needs a local copy. Default: the OpenEuroLLM catalogue copy on LUMI ("clean" = WDS 5-10).
+if [[ "${CORPUS}" == "v4" && -z "${LOCAL_ROOT}" ]]; then
+  LOCAL_ROOT="/appl/local/openeurollm/training/catalogue/hplt/4.0/clean"
+fi
 MAP_URL="https://data.hplt-project.org/three/sorted/${HPLT_LANG}.map"
 SHARD_LIST="${RUNDIR}/shard_list.txt"
-COUNTS_DIR="${ROOT}/counts/${HPLT_LANG}"
+if [[ "${CORPUS}" == "v3" ]]; then
+  COUNTS_DIR="${ROOT}/counts/${HPLT_LANG}"
+else
+  COUNTS_DIR="${ROOT}/counts/${CORPUS}/${HPLT_LANG}"
+fi
 PLAN_FILE="${RUNDIR}/plan.jsonl"
 SAMPLES_DIR="${RUNDIR}/samples"
 FINAL_FILE="${RUNDIR}/samples.jsonl"
@@ -132,14 +159,33 @@ build_wds_awk_pattern() {
   echo "($(IFS='|'; echo "${parts[*]}"))"
 }
 
-# build shard list (optionally filtered by WDS score)
+# list all shards: URLs from the map (v3), or local paths (any corpus with --local-root).
+# Hidden index files (.<shard>.urls.zst etc.) are excluded by the glob.
+list_shards() {
+  if [[ -n "${LOCAL_ROOT}" ]]; then
+    if [[ ! -d "${LOCAL_ROOT}/${HPLT_LANG}" ]]; then
+      echo "[ORCH] ERROR: no such directory: ${LOCAL_ROOT}/${HPLT_LANG}" >&2
+      return 1
+    fi
+    ( shopt -s nullglob; printf '%s\n' "${LOCAL_ROOT}/${HPLT_LANG}"/*.jsonl.zst ) | sort -V
+  else
+    curl -s "$MAP_URL"
+  fi
+}
+if [[ -n "${LOCAL_ROOT}" ]]; then
+  echo "[ORCH] Corpus ${CORPUS}: local shards under ${LOCAL_ROOT}/${HPLT_LANG}"
+else
+  echo "[ORCH] Corpus ${CORPUS}: shards from ${MAP_URL}"
+fi
+
+# build shard list (optionally filtered by WDS score; the score is the filename prefix before "_")
 if [[ -n "${WDS_SPEC}" ]]; then
   pat=$(build_wds_awk_pattern "${WDS_SPEC}")
   echo "[ORCH] Filtering shards to WDS scores matching: ${WDS_SPEC} (pattern: ${pat})"
-  curl -s "$MAP_URL" | awk -F/ -v p="${pat}" '$NF ~ "^" p' > "$SHARD_LIST"
+  list_shards | awk -F/ -v p="${pat}" '$NF ~ "^" p "_"' > "$SHARD_LIST"
 else
   echo "[ORCH] No WDS filter; using all shards"
-  curl -s "$MAP_URL" > "$SHARD_LIST"
+  list_shards > "$SHARD_LIST"
 fi
 
 NUMFILES=$(wc -l < "$SHARD_LIST" | tr -d ' ')
@@ -207,7 +253,7 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   done
 
   echo "[ORCH] Submitting counts array ${s}-${e} (tasks 0-$((e - s)))"
-  raw_id=$(sbatch_with_retry --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",OFFSET=${s},MODE=counts "${WORKER}")
+  raw_id=$(sbatch_with_retry --parsable --job-name="${JOB_COUNTS}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",OFFSET=${s},MODE=counts "${WORKER}")
   jid=$(sanitize_jobid "${raw_id}")
   if [ -z "${jid}" ]; then
     echo "[ORCH] Failed to obtain valid counts job id from sbatch output: '${raw_id}'" >&2
@@ -219,7 +265,7 @@ done
 
 # submit plan job dependent on last counts batch finishing
 echo "[ORCH] Submitting plan job dependent on ${last_counts_jobid}"
-raw_plan_id=$(sbatch_with_retry --parsable --job-name="${JOB_PLAN}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_counts_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",PLAN_FILE="${PLAN_FILE}",MODE=plan "${WORKER}")
+raw_plan_id=$(sbatch_with_retry --parsable --job-name="${JOB_PLAN}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_counts_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",COUNTS_DIR="${COUNTS_DIR}",PLAN_FILE="${PLAN_FILE}",N_SAMPLES="${N_SAMPLES}",MODE=plan "${WORKER}")
 plan_jobid=$(sanitize_jobid "${raw_plan_id}")
 if [ -z "${plan_jobid}" ]; then
   echo "[ORCH] Failed to obtain valid plan job id from sbatch output: '${raw_plan_id}'" >&2
@@ -283,12 +329,12 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   case $_dep_status in
     0)
       # plan job exists in controller -> safe to pass as dependency
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     1)
       # plan finished successfully and was purged from controller -> submit without dependency
       echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     *)
       echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2
@@ -312,11 +358,11 @@ echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
 _dep_status=0; check_job_for_dependency "${last_sample_jobid}" || _dep_status=$?
 case $_dep_status in
   0)
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   1)
     echo "[ORCH] Sample batch ${last_sample_jobid} already finished (accounting OK); submitting concat without dependency"
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   *)
     echo "[ORCH] Sample job ${last_sample_jobid} not found or failed; aborting" >&2

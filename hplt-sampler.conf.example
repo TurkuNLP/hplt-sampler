@@ -18,6 +18,13 @@ WORKER_PARTITION="small"
 #   MODULE_LOAD_CMD="module use /appl/local/csc/modulefiles && module load pytorch"
 MODULE_LOAD_CMD=""
 
+# OPTIONAL: Python interpreter for worker jobs (default: python3 on PATH).
+# Local-shard mode (--corpus v4) needs only the standard library plus the `zstdcat` binary.
+# PYTHON="/usr/bin/python3"
+
+# OPTIONAL: Memory per worker task (default: the worker's #SBATCH --mem=32G).
+# WORKER_MEM="4G"
+
 # OPTIONAL: Override the auto-computed BATCH size (max array tasks per submission).
 # The orchestrator picks a default based on the detected system and partition.
 # Increase if your quota allows more parallel jobs; decrease if you hit queue limits.

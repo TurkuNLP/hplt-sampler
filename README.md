@@ -2,7 +2,7 @@
 
 ## Overview
 
-End-to-end pipeline to proportionally sample documents from the sharded HPLT v3 corpus.
+End-to-end pipeline to proportionally sample documents from the sharded HPLT v3 corpus (over HTTP) or HPLT v4 (from a local copy, e.g. on LUMI).
 Stages: (1) per-shard counting (parallel), (2) global planning (single job), (3) per-shard sampling (parallel), (4) final concatenation.
 Orchestration runs inside a Slurm job so polling/sleeps survive disconnects.
 
@@ -80,6 +80,19 @@ If `#SBATCH --account` and `#SBATCH --partition` are already set correctly in `s
 sbatch sl-orchestrator eng_Latn
 ```
 
+## HPLT v4 (local files)
+
+`--corpus v4` reads shards from the filesystem instead of HTTP. HPLT v4 has no usable public shard map (as of 2026-10-13 the `four/clean/*.map` files list `/three/` URLs), so a local copy is required. The default root is the OpenEuroLLM catalogue copy on LUMI, `/appl/local/openeurollm/training/catalogue/hplt/4.0/clean` (the "clean" subset, WDS 5–10); point `--local-root` at another copy (e.g. `.../4.0/noisy`) if needed:
+
+```
+sbatch sl-orchestrator eng_Latn --corpus v4 [--wds 9-10] [--local-root DIR] [--n-samples 1000000]
+```
+
+- Local mode needs only the Python standard library and the `zstdcat` binary. On LUMI, set `PYTHON="/usr/bin/python3"` in `hplt-sampler.conf` (the LUMI preset does): the CSC AI `python3` container cannot see `/appl/local/openeurollm`.
+- Counting is near-instant where a shard has its hidden URL index (`.<shard>.urls.zst`, whose second column sums to the document count); otherwise the shard is decompressed once. Each count file records which (`"method": "index"|"scan"`).
+- v4 runs write to `results-v4-<LANG>-<WDS>/` and cache counts in `counts/v4/<LANG>/`, so they never mix with v3 (whose shard file names overlap).
+- English v4 shard names carry a source tag (`<WDS>_<n>.{cc,ia,ab}.jsonl.zst`); WDS filtering works the same.
+
 ## WDS filtering
 
 HPLT v3 shards are organised by Web Docs Scorer (WDS) score — a per-document quality score from 0 to 10. Shard filenames are prefixed with their WDS score (e.g. `9_1.jsonl.zst`, `10_3.jsonl.zst`). See [web-docs-scorer](https://github.com/pablop16n/web-docs-scorer) for details.
@@ -92,7 +105,7 @@ By default the pipeline samples from all available shards. Use `--wds` to restri
 --wds 10            # score 10 only
 ```
 
-HPLT v3 shards cover WDS scores 5–10. Not all languages have shards at every score level; an empty shard list will abort with an error.
+HPLT v3 shards (and the v4 "clean" subset) cover WDS scores 5–10. The match is anchored on the `<score>_` prefix, so `--wds 1` does not pick up WDS-10 shards. Not all languages have shards at every score level; an empty shard list will abort with an error.
 
 **Sampling is proportional to document count across all selected shards.** If WDS-9 contains 99× more documents than WDS-10, the sample will reflect that ratio — you get a representative random draw from the combined tier, not equal representation per score. To sample each WDS score equally, run the pipeline separately per score, for example like this:
 
@@ -114,7 +127,7 @@ Each run writes to its own `results-eng_Latn-<WDS>/` directory, so no renaming i
 
 ## Changing sample size / manual steps
 
-To change the global sample target, run `plan.py` directly (it waits for counts if needed):
+To change the global sample target, pass `--n-samples N` to `sl-orchestrator`, or run `plan.py` directly (it waits for counts if needed):
 
 ```
 python3 plan.py <LANG> --n-samples 200000 --shard-list ./results-<LANG>-<WDS>/shard_list.txt --counts-dir ./counts/<LANG> --out ./results-<LANG>-<WDS>/plan.jsonl
@@ -151,9 +164,8 @@ python3 check.py <LANG> --plan ./results-<LANG>-<WDS>/plan.jsonl --samples-dir .
 ## TODO / known limitations
 
 - **Verify on Puhti with large languages.** Basic functionality and English-scale runs (1294 shards, 1M docs) confirmed on Mahti; Puhti has only been tested with smaller languages.
-- **Multi-version support.** Currently hardcoded to HPLT v3 (`/three/` in the map URL). Adding v2 and v4 (when available) would require parameterising the corpus version — likely a `--corpus` flag or a conf key that selects the base URL.
+- **Multi-version support.** v3 (HTTP) and v4 (local, `--corpus v4`) are supported; v2 is not.
 - **Shared counts cache.** Per-shard counts should be stable per corpus version and cheap to share. A hosted or group-shared `counts/` directory (e.g. in LUMI `projappl/`) would eliminate redundant recomputation across users. *Pending: check whether a shared path can be provisioned under the project allocation.*
 - **Roihu support.** Preset stub exists; fill in once Roihu becomes generally available.
-- **Local filesystem access on LUMI.** HPLT data lives in `projappl/`; on LUMI, sampling could read directly from the filesystem instead of streaming over HTTP, removing the main bottleneck (HTTP is brittle with these volumes). Needs a flag or auto-detection to switch between URL and local path modes.
-- **`--n-samples` on the orchestrator CLI.** Currently only configurable by running `plan.py` manually; exposing it as `sl-orchestrator --n-samples N` would avoid the manual step.
+- **Local filesystem access for v3.** Local mode (`--local-root`) exists and is used for v4; pointing it at a local v3 copy should work but is untested.
 - **Dry-run mode.** A `--dry-run` flag that fetches the shard list, prints shard count and estimated resource usage, and exits without submitting any jobs would help users sanity-check scope before committing quota.

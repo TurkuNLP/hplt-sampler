@@ -5,8 +5,15 @@ import argparse
 import time
 import random
 
-import requests
-import zstandard as zstd
+try:  # only needed for URL shards (HPLT v3); local shards (v4 on LUMI) use shardio
+    import requests
+    import zstandard as zstd
+    NET_ERRORS = (requests.exceptions.RequestException, zstd.ZstdError)
+except ImportError:
+    requests = zstd = None
+    NET_ERRORS = ()
+
+import shardio
 
 MAX_LINE_BYTES = 50 * 1024 * 1024  # 50 MB
 
@@ -60,6 +67,21 @@ def stream_sample(url, n_take, timeout):
                 resp.close()
             except Exception:
                 pass
+    return reservoir, total_seen
+
+
+def local_sample(path, n_take):
+    reservoir = []
+    total_seen = 0
+    for line in shardio.iter_local_lines(path):
+        text = line.decode("utf-8", errors="replace")
+        if total_seen < n_take:
+            reservoir.append(text)
+        else:
+            j = random.randint(0, total_seen)
+            if j < n_take:
+                reservoir[j] = text
+        total_seen += 1
     return reservoir, total_seen
 
 
@@ -123,7 +145,10 @@ def main():
         try:
             attempt += 1
             print(f"[SAMPLE] Attempt {attempt}/{args.retries} - streaming {args.shard_url}")
-            reservoir, total_seen = stream_sample(args.shard_url, n_take, timeout=args.timeout)
+            if shardio.is_local(args.shard_url):
+                reservoir, total_seen = local_sample(args.shard_url, n_take)
+            else:
+                reservoir, total_seen = stream_sample(args.shard_url, n_take, timeout=args.timeout)
             print(f"[SAMPLE] Streamed {total_seen} docs; selected {len(reservoir)}")
 
             # atomic write
@@ -133,10 +158,8 @@ def main():
             os.replace(tmpfile, outfile)
             print(f"[SAMPLE] Wrote {len(reservoir)} samples to {outfile}")
             return 0
-        except requests.exceptions.RequestException as e:
-            err = f"network error: {e}"
-        except zstd.ZstdError as e:
-            err = f"decompression error: {e}"
+        except NET_ERRORS as e:
+            err = f"network/decompression error: {e}"
         except Exception as e:
             err = f"unexpected error: {e}"
 

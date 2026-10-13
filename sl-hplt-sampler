@@ -46,6 +46,9 @@ CONFIG="${PWD}/hplt-sampler.conf"
 if [[ -n "${MODULE_LOAD_CMD:-}" ]]; then
   eval "${MODULE_LOAD_CMD}"
 fi
+# Interpreter for the Python stages (set PYTHON in hplt-sampler.conf). On LUMI, local v4
+# shards need one that can see /appl/local/openeurollm, e.g. the system /usr/bin/python3.
+PYTHON="${PYTHON:-python3}"
 
 if [ "$MODE" != "plan" ] && [ "$MODE" != "concat" ]; then
   if [ -z "${SHARD_LIST:-}" ] || [ ! -r "${SHARD_LIST:-}" ]; then
@@ -65,15 +68,15 @@ fi
 case "$MODE" in
   counts)
     echo "[WORKER] MODE=counts LANG=${HPLT_LANG} SHARD=${SHARD_URL}"
-    python3 -u counts.py "$HPLT_LANG" "$SHARD_URL" --counts-dir "$COUNTS_DIR"
+    "${PYTHON}" -u counts.py "$HPLT_LANG" "$SHARD_URL" --counts-dir "$COUNTS_DIR"
     ;;
   sample)
     echo "[WORKER] MODE=sample LANG=${HPLT_LANG} SHARD=${SHARD_URL} PLAN=${PLAN_FILE}"
-    python3 -u sample.py "$HPLT_LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
+    "${PYTHON}" -u sample.py "$HPLT_LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
     ;;
   plan)
     echo "[WORKER] MODE=plan LANG=${HPLT_LANG} SHARD_LIST=${SHARD_LIST} COUNTS_DIR=${COUNTS_DIR} OUT=${PLAN_FILE}"
-    python3 -u plan.py "${HPLT_LANG}" --shard-list "${SHARD_LIST}" --counts-dir "${COUNTS_DIR}" --out "${PLAN_FILE}"
+    "${PYTHON}" -u plan.py "${HPLT_LANG}" --shard-list "${SHARD_LIST}" --counts-dir "${COUNTS_DIR}" --out "${PLAN_FILE}" ${N_SAMPLES:+--n-samples "${N_SAMPLES}"}
     ;;
   concat)
     echo "[WORKER] MODE=concat SAMPLES_DIR=${SAMPLES_DIR}"
