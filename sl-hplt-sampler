@@ -72,7 +72,7 @@ case "$MODE" in
     ;;
   sample)
     echo "[WORKER] MODE=sample LANG=${HPLT_LANG} SHARD=${SHARD_URL} PLAN=${PLAN_FILE}"
-    "${PYTHON}" -u sample.py "$HPLT_LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR"
+    "${PYTHON}" -u sample.py "$HPLT_LANG" "$SHARD_URL" --plan "$PLAN_FILE" --outdir "$SAMPLES_DIR" ${SEED_BASE:+--seed-base "${SEED_BASE}"}
     ;;
   plan)
     echo "[WORKER] MODE=plan LANG=${HPLT_LANG} SHARD_LIST=${SHARD_LIST} COUNTS_DIR=${COUNTS_DIR} OUT=${PLAN_FILE}"

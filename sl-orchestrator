@@ -6,7 +6,7 @@
 #   (a) editing the two #SBATCH lines below directly, OR
 #   (b) overriding on the sbatch command line:
 #         sbatch --account=project_X --partition=small sl-orchestrator eng_Latn [--wds 9-10] \
-#           [--corpus v3|v4] [--local-root DIR] [--n-samples N]
+#           [--corpus v3|v4] [--local-root DIR] [--n-samples N] [--seed S]
 # Worker jobs (counts, plan, sample, concat) read WORKER_PARTITION from hplt-sampler.conf.
 
 #SBATCH --job-name=orchestrator
@@ -27,12 +27,14 @@ WDS_SPEC=""
 CORPUS="v3"
 LOCAL_ROOT=""
 N_SAMPLES=""
+SEED_BASE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wds)        WDS_SPEC="$2"; shift 2 ;;
     --corpus)     CORPUS="$2"; shift 2 ;;
     --local-root) LOCAL_ROOT="$2"; shift 2 ;;
     --n-samples)  N_SAMPLES="$2"; shift 2 ;;
+    --seed)       SEED_BASE="$2"; shift 2 ;;
     *)            HPLT_LANG="$1"; shift ;;
   esac
 done
@@ -194,6 +196,37 @@ if [ -z "$NUMFILES" ] || [ "$NUMFILES" -eq 0 ]; then
   exit 1
 fi
 
+# --- reproducibility: a run seed (drawn and recorded if not given) and a run record ---
+if [[ -z "${SEED_BASE}" ]]; then
+  SEED_BASE=$(( (RANDOM << 15) | RANDOM ))
+  echo "[ORCH] No --seed given; drew seed ${SEED_BASE}"
+fi
+_git_rev=$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)
+_git_dirty=$(git -C "${ROOT}" status --porcelain --untracked-files=no 2>/dev/null | grep -q . && echo true || echo false)
+cat > "${RUNDIR}/run.json" <<RUNJSON
+{
+  "started": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "lang": "${HPLT_LANG}",
+  "corpus": "${CORPUS}",
+  "local_root": "${LOCAL_ROOT}",
+  "map_url": "$([[ -z "${LOCAL_ROOT}" ]] && echo "${MAP_URL}")",
+  "wds": "${WDS_SPEC:-all}",
+  "n_samples": "${N_SAMPLES:-default}",
+  "seed": ${SEED_BASE},
+  "n_shards": ${NUMFILES},
+  "sampler_commit": "${_git_rev}",
+  "sampler_dirty": ${_git_dirty},
+  "python": "$("${PYTHON:-python3}" -V 2>&1)",
+  "cluster": "${_detected_system}",
+  "slurm_job": "${SLURM_JOB_ID:-none}"
+}
+RUNJSON
+# shard inventory (size, mtime): the corpus copy is not ours and may change between runs
+if [[ -n "${LOCAL_ROOT}" ]]; then
+  xargs -d '\n' stat --printf '%n\t%s\t%y\n' < "${SHARD_LIST}" > "${RUNDIR}/shard_inventory.tsv"
+fi
+echo "[ORCH] Run record: ${RUNDIR}/run.json"
+
 JOB_COUNTS="hplt_counts"
 JOB_PLAN="hplt_plan"
 JOB_SAMPLE="hplt_sample"
@@ -329,12 +362,12 @@ for (( s=0; s<NUMFILES; s+=BATCH )); do
   case $_dep_status in
     0)
       # plan job exists in controller -> safe to pass as dependency
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${plan_jobid}" --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",SEED_BASE="${SEED_BASE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     1)
       # plan finished successfully and was purged from controller -> submit without dependency
       echo "[ORCH] Plan ${plan_jobid} already finished (accounting OK); submitting sample array without dependency"
-      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",OFFSET=${s},MODE=sample "${WORKER}")
+      raw_sample_id=$(sbatch_with_retry --parsable --job-name="${JOB_SAMPLE}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --array="0-$((e - s))" --export=ALL,HPLT_LANG="${HPLT_LANG}",SHARD_LIST="${SHARD_LIST}",PLAN_FILE="${PLAN_FILE}",SAMPLES_DIR="${SAMPLES_DIR}",SEED_BASE="${SEED_BASE}",OFFSET=${s},MODE=sample "${WORKER}")
       ;;
     *)
       echo "[ORCH] Plan job ${plan_jobid} not found or failed; aborting" >&2

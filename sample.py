@@ -4,6 +4,7 @@ import json
 import argparse
 import time
 import random
+import hashlib
 
 try:  # only needed for URL shards (HPLT v3); local shards (v4 on LUMI) use shardio
     import requests
@@ -92,12 +93,19 @@ def main():
     p.add_argument("--plan", default=None, help="Path to plan jsonl (default: <scriptdir>/<lang>_plan.jsonl)")
     p.add_argument("--outdir", default=None, help="Directory to write per-shard samples (default: ./samples)")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--seed-base", type=int, default=None,
+                   help="Run-level seed; the shard's seed is derived from it and the shard filename (overrides --seed)")
     p.add_argument("--timeout", type=int, default=60)
     p.add_argument("--retries", type=int, default=5)
     p.add_argument("--backoff-base", type=float, default=5.0)
     args = p.parse_args()
 
-    if args.seed is not None:
+    fname = args.shard_url.split("/")[-1]
+    if args.seed_base is not None:
+        # per-shard seed from run seed + filename: independent of shard order and array layout
+        digest = hashlib.sha256(f"{args.seed_base}:{fname}".encode("utf-8")).hexdigest()
+        random.seed(int(digest[:16], 16))
+    elif args.seed is not None:
         random.seed(args.seed)
 
     script_root = os.path.dirname(__file__)
@@ -105,7 +113,6 @@ def main():
     outdir = args.outdir or os.path.join(script_root, "samples")
     os.makedirs(outdir, exist_ok=True)
 
-    fname = args.shard_url.split("/")[-1]
     print(f"[SAMPLE] lang={args.lang} shard={fname} plan={plan_path}")
 
     if not os.path.exists(plan_path):
