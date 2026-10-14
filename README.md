@@ -113,7 +113,7 @@ Every run has a seed: `--seed S`, or one drawn and written to `run.json` (and th
 
 - Worker headers request `mem=32G` (override with `WORKER_MEM`) and `time=3:00:00` per array task. The orchestrator requests 72 h for polling and does little compute; `--mem=2G` on the `sbatch` line is enough.
 - A local v4 shard is read at roughly 85 MB/s compressed per task on LUMI (measured 2026-10). English v4 (18.2 TB) is about 60 task-hours of reading.
-- Array submissions are batched (`BATCH`) and serialized: the next batch is submitted when no job of the same name (`hplt_counts`, `hplt_sample`) is left in the queue. **Two runs by the same user therefore wait for each other's batches.** This is safe, but the second run may sit idle.
+- Array submissions are batched (`BATCH`) and serialized within a run: the next batch is submitted when none of the run's own jobs of that stage are left in the queue. Job names carry the run tag (e.g. `hplt_sample-v4-eng_Latn-all`), so separate runs proceed independently, but they share your queue limits.
 - Large v3 runs stream every shard over HTTP and can reserve many CPU hours: English at WDS 9–10 alone is over 300 shards.
 
 ## Manual steps and verification
@@ -155,4 +155,3 @@ python3 check.py <LANG> --plan ./results-<...>/plan.jsonl --samples-dir ./result
 - **Puhti** has only been tested with smaller languages.
 - **HPLT v2** is not supported. Local mode should work for a local v3 copy (`--local-root`) but is untested.
 - **Shared counts cache**: counts are stable per corpus version, so a group-shared `COUNTS_DIR` (e.g. in LUMI `projappl/`) would spare other users the counting. Pending a shared path under the project allocation.
-- **Concurrent runs** serialize on job names (see Resources). Run-specific job names would let them proceed in parallel.

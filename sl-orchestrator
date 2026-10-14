@@ -278,9 +278,12 @@ if [[ -n "${LOCAL_ROOT}" ]]; then
 fi
 echo "[ORCH] Run record: ${RUNDIR}/run.json"
 
-JOB_COUNTS="hplt_counts"
-JOB_PLAN="hplt_plan"
-JOB_SAMPLE="hplt_sample"
+# job names carry the run tag, so batches of one run never wait on another run's jobs
+_run_tag="${_corpus_tag}${HPLT_LANG}-${_wds_tag}"
+JOB_COUNTS="hplt_counts-${_run_tag}"
+JOB_PLAN="hplt_plan-${_run_tag}"
+JOB_SAMPLE="hplt_sample-${_run_tag}"
+JOB_CONCAT="hplt_concat-${_run_tag}"
 
 sanitize_jobid() {
   local raw="$1"
@@ -442,11 +445,11 @@ echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
 _dep_status=0; check_job_for_dependency "${last_sample_jobid}" || _dep_status=$?
 case $_dep_status in
   0)
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   1)
     echo "[ORCH] Sample batch ${last_sample_jobid} already finished (accounting OK); submitting concat without dependency"
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="hplt_concat" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
     ;;
   *)
     echo "[ORCH] Sample job ${last_sample_jobid} not found or failed; aborting" >&2
