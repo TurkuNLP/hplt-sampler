@@ -7,6 +7,8 @@
 #   (b) overriding on the sbatch command line:
 #         sbatch --account=project_X --partition=small sl-orchestrator eng_Latn [--wds 9-10] \
 #           [--corpus v3|v4] [--local-root DIR] [--n-samples N] [--seed S]
+# Preview scope without submitting anything (no sbatch needed, writes nothing):
+#         bash sl-orchestrator eng_Latn --corpus v4 --wds 9-10 --dry-run
 # Worker jobs (counts, plan, sample, concat) read WORKER_PARTITION from hplt-sampler.conf.
 
 #SBATCH --job-name=orchestrator
@@ -28,13 +30,32 @@ CORPUS="v3"
 LOCAL_ROOT=""
 N_SAMPLES=""
 SEED_BASE=""
+DRY_RUN=false
+usage() {
+  cat <<USAGE
+Usage: sbatch [--account=X --partition=Y] sl-orchestrator [LANG] [options]
+       bash sl-orchestrator [LANG] [options] --dry-run
+
+  LANG                 HPLT language code, e.g. eng_Latn (default: eng_Latn)
+  --wds SPEC           WDS scores to include: 9-10 | 8,9,10 | 10 (default: all shards)
+  --corpus v3|v4       v3 streams over HTTP; v4 reads local files (default: v3)
+  --local-root DIR     local corpus root containing LANG/ (v4 default: OpenEuroLLM copy on LUMI)
+  --n-samples N        global sample size (default: plan.py default, 1000000)
+  --seed S             run seed; per-shard seeds derive from it (default: drawn and recorded)
+  --dry-run            list shards and estimate scope, then exit without submitting or writing
+  -h, --help           show this help
+USAGE
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --dry-run)    DRY_RUN=true; shift ;;
     --wds)        WDS_SPEC="$2"; shift 2 ;;
     --corpus)     CORPUS="$2"; shift 2 ;;
     --local-root) LOCAL_ROOT="$2"; shift 2 ;;
     --n-samples)  N_SAMPLES="$2"; shift 2 ;;
     --seed)       SEED_BASE="$2"; shift 2 ;;
+    -*)           echo "[ORCH] ERROR: unknown option: $1" >&2; usage >&2; exit 1 ;;
     *)            HPLT_LANG="$1"; shift ;;
   esac
 done
@@ -52,8 +73,10 @@ _wds_tag="${_wds_tag//,/+}"
 _corpus_tag=""
 [[ "${CORPUS}" != "v3" ]] && _corpus_tag="${CORPUS}-"
 RUNDIR="${ROOT}/results-${_corpus_tag}${HPLT_LANG}-${_wds_tag}"
-mkdir -p "${RUNDIR}"
-echo "[ORCH] Run directory: ${RUNDIR}"
+if ! ${DRY_RUN}; then
+  mkdir -p "${RUNDIR}"
+  echo "[ORCH] Run directory: ${RUNDIR}"
+fi
 
 # --- detect system (used for preset defaults and BATCH sizing) ---
 # SLURM_CLUSTER_NAME is set by Slurm inside every job; fall back to module-system
@@ -67,7 +90,7 @@ fi
 CONFIG="${ROOT}/hplt-sampler.conf"
 # shellcheck source=/dev/null
 [[ -f "${CONFIG}" ]] && source "${CONFIG}"
-if [[ -z "${ACCOUNT:-}" ]]; then
+if [[ -z "${ACCOUNT:-}" ]] && ! ${DRY_RUN}; then
   if [[ -t 0 ]]; then
     # Interactive terminal: prompt for required values.
     _preset="${ROOT}/presets/${_detected_system}.conf"
@@ -137,6 +160,10 @@ if [[ "${CORPUS}" == "v4" && -z "${LOCAL_ROOT}" ]]; then
 fi
 MAP_URL="https://data.hplt-project.org/three/sorted/${HPLT_LANG}.map"
 SHARD_LIST="${RUNDIR}/shard_list.txt"
+if ${DRY_RUN}; then
+  SHARD_LIST=$(mktemp)
+  trap 'rm -f "${SHARD_LIST}"' EXIT
+fi
 if [[ "${CORPUS}" == "v3" ]]; then
   COUNTS_DIR="${ROOT}/counts/${HPLT_LANG}"
 else
@@ -194,6 +221,30 @@ NUMFILES=$(wc -l < "$SHARD_LIST" | tr -d ' ')
 if [ -z "$NUMFILES" ] || [ "$NUMFILES" -eq 0 ]; then
   echo "No shards found for ${HPLT_LANG}" >&2
   exit 1
+fi
+
+# --- dry run: report scope and exit before anything is written or submitted ---
+if ${DRY_RUN}; then
+  echo "[DRY-RUN] ${NUMFILES} shards for ${HPLT_LANG} (corpus ${CORPUS}, WDS ${WDS_SPEC:-all})"
+  echo "[DRY-RUN] Shards per WDS score:"
+  awk -F/ '{split($NF, a, "_"); n[a[1]]++} END {for (k in n) printf "  WDS %-3s %5d\n", k, n[k]}' "${SHARD_LIST}" | sort -k2n
+  _cached=0
+  while IFS= read -r _u; do
+    [[ -f "${COUNTS_DIR}/${_u##*/}.json" ]] && _cached=$((_cached + 1))
+  done < "${SHARD_LIST}"
+  echo "[DRY-RUN] Counts already cached in ${COUNTS_DIR}: ${_cached}/${NUMFILES}"
+  if [[ "${_cached}" -eq "${NUMFILES}" ]]; then
+    _docs=$(cd "${COUNTS_DIR}" && sed 's|.*/||' "${SHARD_LIST}" | sed 's|$|.json|' | xargs cat | grep -o '"count": [0-9]*' | awk '{s+=$2} END {print s}')
+    echo "[DRY-RUN] Documents in scope: ${_docs}"
+  fi
+  if [[ -n "${LOCAL_ROOT}" ]]; then
+    _bytes=$(xargs -d '\n' stat -c '%s' < "${SHARD_LIST}" | awk '{s+=$1} END {print s}')
+    awk -v b="${_bytes}" 'BEGIN {printf "[DRY-RUN] Compressed size: %.1f GB; one full read at ~85 MB/s per task (LUMI, measured 2026-10) is ~%.1f task-hours\n", b/1e9, b/85e6/3600}'
+  fi
+  echo "[DRY-RUN] Planned sample: ${N_SAMPLES:-1000000 (plan.py default)}; run directory would be ${RUNDIR}"
+  echo "[DRY-RUN] Sampling reads every selected shard in full; uncached counts add one more pass where no index exists."
+  echo "[DRY-RUN] Nothing submitted."
+  exit 0
 fi
 
 # --- reproducibility: a run seed (drawn and recorded if not given) and a run record ---
