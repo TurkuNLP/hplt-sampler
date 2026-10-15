@@ -152,7 +152,7 @@ python3 check.py <LANG> --plan ./results-<...>/plan.jsonl --samples-dir ./result
 
 ## Robustness notes
 
-- The shuffle holds only line offsets in memory, writes to a temporary file, checks that it holds exactly the input's lines (order-independent fingerprint) and only then replaces the file.
+- The shuffle is two passes of sequential I/O through temporary bucket files (~256 MB each; one in memory at a time). It checks that the output holds exactly the input's lines (order-independent fingerprint) and only then replaces the file.
 - Per-shard outputs are written atomically (tmp → rename), so parallel jobs are safe, and a rerun skips shards whose output exists.
 - `plan.py` matches the expected shards from the shard list and waits for all counts.
 - HTTP reads retry with exponential backoff; `sbatch` calls retry on socket timeouts; the array index `OFFSET` keeps batches within `MaxArraySize`.
