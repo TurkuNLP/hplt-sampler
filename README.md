@@ -117,6 +117,18 @@ Every run has a seed: `--seed S`, or one drawn and written to `run.json` (and th
 - Array submissions are batched (`BATCH`) and serialized within a run: the next batch is submitted when none of the run's own jobs of that stage are left in the queue. Job names carry the run tag (e.g. `hplt_sample-v4-eng_Latn-all`), so separate runs proceed independently, but they share your queue limits.
 - Large v3 runs stream every shard over HTTP and can reserve many CPU hours: English at WDS 9–10 alone is over 300 shards.
 
+## Validating and publishing
+
+A finished run is validated and published to object storage with:
+
+```
+bash publish.sh results-<...> [DEST_PREFIX]      # default: lumi-462001491-private:hplt-samples
+```
+
+- `validate.py RUNDIR` (run first by `publish.sh`, or on its own) does structural checks only: run record present, plan covers the shard list, record count equals the plan, every record parses, ids present and unique, and whether the corpus files still match `shard_inventory.tsv`. It writes `validation.json`; any failure stops the publish.
+- `publish.sh` compresses the sample (`samples.jsonl.zst`), uploads it with `run.json`, `plan.jsonl`, the shard list and inventory, `validation.json` and `SHA256SUMS` to `<DEST_PREFIX>/<corpus>/<lang>/<wds>-n<N>-s<seed>/`, and verifies the upload by downloading and comparing.
+- **Contract:** only validated samples are published, and an existing destination is never overwritten. Downstream tools read samples from there, not from raw shards. Needs `rclone` configured for the destination (on LUMI: `module load lumio; lumio-conf`).
+
 ## Manual steps and verification
 
 Change the plan without rerunning everything (it waits for counts if needed):
