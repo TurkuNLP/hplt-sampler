@@ -7,7 +7,7 @@ End-to-end Slurm pipeline that draws a **simple random sample** of documents fro
 - **HPLT v3**: shards are streamed over HTTP from `data.hplt-project.org`.
 - **HPLT v4**: shards are read from a local copy (by default the OpenEuroLLM catalogue copy on LUMI). v4 has no usable public shard map (as of 2026-10-13 the `four/clean/*.map` files list `/three/` URLs).
 
-Stages: (1) per-shard counting (parallel), (2) global planning (single job), (3) per-shard reservoir sampling (parallel), (4) concatenation. Orchestration runs inside a Slurm job, so polling and waits survive disconnects.
+Stages: (1) per-shard counting (parallel), (2) global planning (single job), (3) per-shard reservoir sampling (parallel), (4) concatenation and a seeded shuffle. Orchestration runs inside a Slurm job, so polling and waits survive disconnects.
 
 Verified: v3 on LUMI, Puhti and Mahti (English, 1294 shards, 1M documents, on Mahti); v4 on LUMI (Finnish end-to-end tests, 2026-10-13/15; first English run 2026-10-15).
 
@@ -59,6 +59,7 @@ bash sl-orchestrator [LANG] [options] --dry-run
 | `--local-root DIR` | v4: `/appl/local/openeurollm/training/catalogue/hplt/4.0/clean` | Local corpus root containing `LANG/` (e.g. `.../4.0/noisy` for the noisy subset) |
 | `--n-samples N` | 1000000 | Global sample size |
 | `--seed S` | drawn and recorded | Run seed (see Reproducibility) |
+| `--no-shuffle` | shuffle | Keep the final sample grouped by shard instead of shuffling it |
 | `--dry-run` | | List the shards and estimate scope, then exit. Submits nothing, writes nothing, needs no `sbatch` |
 | `-h`, `--help` | | Usage |
 
@@ -81,7 +82,7 @@ Each run writes to its own directory, `results-<LANG>-<WDS>/` for v3 and `result
 
 | File | Content |
 |---|---|
-| `samples.jsonl` | The sample: full original records, one per line, grouped by shard |
+| `samples.jsonl` | The sample: full original records, one per line, **shuffled** (so any prefix is itself a random sample), or grouped by shard with `--no-shuffle` |
 | `plan.jsonl` | Per shard: document count and number of documents drawn |
 | `shard_list.txt` | The shards (URLs or paths) the run used |
 | `run.json` | Run record: arguments, seed, sampler commit (and whether the tree was dirty), Python version, cluster, orchestrator job id, start time |
@@ -107,7 +108,7 @@ sbatch sl-orchestrator eng_Latn --corpus v4 --wds 10 --n-samples 100000 --seed 1
 
 ## Reproducibility
 
-Every run has a seed: `--seed S`, or one drawn and written to `run.json` (and the orchestrator log). Each shard's seed is derived from the run seed and the shard filename, so a rerun with the same seed, corpus, shard list and counts reproduces the sample exactly, independent of shard order and array batching. Commit your changes before a production run so `sampler_commit` in `run.json` identifies the code.
+Every run has a seed: `--seed S`, or one drawn and written to `run.json` (and the orchestrator log). Each shard's seed is derived from the run seed and the shard filename, and the final shuffle's seed from the run seed, so a rerun with the same seed, corpus, shard list and counts reproduces the sample exactly, independent of shard order and array batching. Commit your changes before a production run so `sampler_commit` in `run.json` identifies the code.
 
 ## Resources and limits
 
@@ -137,6 +138,12 @@ Verify a finished run:
 wc -l results-<...>/samples.jsonl     # should equal the sum of n_take in plan.jsonl
 ```
 
+Shuffle an existing sample (e.g. one made with `--no-shuffle`, or before shuffling existed); in place by default, with a content check before the file is replaced:
+
+```
+python3 shuffle.py results-<...>/samples.jsonl --seed-base <S>
+```
+
 `check.py` compares per-shard sample files against the plan. It needs the `samples/` directory, which is kept only when concat did not succeed:
 
 ```
@@ -145,6 +152,7 @@ python3 check.py <LANG> --plan ./results-<...>/plan.jsonl --samples-dir ./result
 
 ## Robustness notes
 
+- The shuffle holds only line offsets in memory, writes to a temporary file, checks that it holds exactly the input's lines (order-independent fingerprint) and only then replaces the file.
 - Per-shard outputs are written atomically (tmp → rename), so parallel jobs are safe, and a rerun skips shards whose output exists.
 - `plan.py` matches the expected shards from the shard list and waits for all counts.
 - HTTP reads retry with exponential backoff; `sbatch` calls retry on socket timeouts; the array index `OFFSET` keeps batches within `MaxArraySize`.

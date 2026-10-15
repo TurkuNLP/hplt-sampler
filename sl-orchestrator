@@ -6,7 +6,7 @@
 #   (a) editing the two #SBATCH lines below directly, OR
 #   (b) overriding on the sbatch command line:
 #         sbatch --account=project_X --partition=small sl-orchestrator eng_Latn [--wds 9-10] \
-#           [--corpus v3|v4] [--local-root DIR] [--n-samples N] [--seed S]
+#           [--corpus v3|v4] [--local-root DIR] [--n-samples N] [--seed S] [--no-shuffle]
 # Preview scope without submitting anything (no sbatch needed, writes nothing):
 #         bash sl-orchestrator eng_Latn --corpus v4 --wds 9-10 --dry-run
 # Worker jobs (counts, plan, sample, concat) read WORKER_PARTITION from hplt-sampler.conf.
@@ -30,6 +30,7 @@ CORPUS="v3"
 LOCAL_ROOT=""
 N_SAMPLES=""
 SEED_BASE=""
+SHUFFLE=true
 DRY_RUN=false
 usage() {
   cat <<USAGE
@@ -42,6 +43,7 @@ Usage: sbatch [--account=X --partition=Y] sl-orchestrator [LANG] [options]
   --local-root DIR     local corpus root containing LANG/ (v4 default: OpenEuroLLM copy on LUMI)
   --n-samples N        global sample size (default: plan.py default, 1000000)
   --seed S             run seed; per-shard seeds derive from it (default: drawn and recorded)
+  --no-shuffle         keep the final sample grouped by shard (default: shuffled with a seed from S)
   --dry-run            list shards and estimate scope, then exit without submitting or writing
   -h, --help           show this help
 USAGE
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)    usage; exit 0 ;;
     --dry-run)    DRY_RUN=true; shift ;;
+    --no-shuffle) SHUFFLE=false; shift ;;
     --wds)        WDS_SPEC="$2"; shift 2 ;;
     --corpus)     CORPUS="$2"; shift 2 ;;
     --local-root) LOCAL_ROOT="$2"; shift 2 ;;
@@ -264,6 +267,7 @@ cat > "${RUNDIR}/run.json" <<RUNJSON
   "wds": "${WDS_SPEC:-all}",
   "n_samples": "${N_SAMPLES:-default}",
   "seed": ${SEED_BASE},
+  "shuffle": ${SHUFFLE},
   "n_shards": ${NUMFILES},
   "sampler_commit": "${_git_rev}",
   "sampler_dirty": ${_git_dirty},
@@ -445,11 +449,11 @@ echo "[ORCH] Submitting concat job dependent on ${last_sample_jobid}"
 _dep_status=0; check_job_for_dependency "${last_sample_jobid}" || _dep_status=$?
 case $_dep_status in
   0)
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --dependency="afterok:${last_sample_jobid}" --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",SEED_BASE="${SEED_BASE}",SHUFFLE="${SHUFFLE}",MODE=concat "${WORKER}")
     ;;
   1)
     echo "[ORCH] Sample batch ${last_sample_jobid} already finished (accounting OK); submitting concat without dependency"
-    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",MODE=concat "${WORKER}")
+    raw_concat_id=$(sbatch_with_retry --parsable --job-name="${JOB_CONCAT}" --account="${ACCOUNT}" --partition="${WORKER_PARTITION}" ${WORKER_MEM:+--mem="${WORKER_MEM}"} --export=ALL,HPLT_LANG="${HPLT_LANG}",SAMPLES_DIR="${SAMPLES_DIR}",PLAN_FILE="${PLAN_FILE}",FINAL_FILE="${FINAL_FILE}",SEED_BASE="${SEED_BASE}",SHUFFLE="${SHUFFLE}",MODE=concat "${WORKER}")
     ;;
   *)
     echo "[ORCH] Sample job ${last_sample_jobid} not found or failed; aborting" >&2

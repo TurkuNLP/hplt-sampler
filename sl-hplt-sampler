@@ -82,6 +82,10 @@ case "$MODE" in
     echo "[WORKER] MODE=concat SAMPLES_DIR=${SAMPLES_DIR}"
     mkdir -p "${SAMPLES_DIR}"
     cat "${SAMPLES_DIR}"/*.jsonl > "${FINAL_FILE}"
+    if [[ -s "${FINAL_FILE}" && "${SHUFFLE:-true}" == "true" ]]; then
+      # per-shard samples are grouped by shard (WDS score, source); shuffle so any prefix is a random sample
+      "${PYTHON}" -u shuffle.py "${FINAL_FILE}" --seed-base "${SEED_BASE:?SEED_BASE required for shuffle}"
+    fi
     if [[ -s "${FINAL_FILE}" ]]; then
       rm -rf "${SAMPLES_DIR}"
       echo "[WORKER] Concatenated to ${FINAL_FILE} and removed per-shard samples"
