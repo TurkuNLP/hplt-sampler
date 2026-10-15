@@ -142,7 +142,7 @@ WORKER_MEM="${WORKER_MEM:-}"
 # LUMI limits from partition table (running cap − 20 headroom):
 #   small/small-g/standard-g: 200 running → 180
 #   standard:                 100 running → 80
-# Puhti/Mahti: 400 jobs/user global limit; no per-partition breakdown available.
+# Puhti/Mahti (decommissioned; cases kept only for the deprecated presets): 400 jobs/user global limit.
 #   Verify with: scontrol show partition <name>  (run on the target system)
 if [[ -z "${BATCH:-}" ]]; then
   case "${_detected_system}:${WORKER_PARTITION}" in

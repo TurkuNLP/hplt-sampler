@@ -9,7 +9,7 @@ End-to-end Slurm pipeline that draws a **simple random sample** of documents fro
 
 Stages: (1) per-shard counting (parallel), (2) global planning (single job), (3) per-shard reservoir sampling (parallel), (4) concatenation and a seeded shuffle. Orchestration runs inside a Slurm job, so polling and waits survive disconnects.
 
-Verified: v3 on LUMI, Puhti and Mahti (English, 1294 shards, 1M documents, on Mahti); v4 on LUMI (Finnish end-to-end tests, 2026-10-13/15; first English run 2026-10-15).
+Verified: v3 and v4 on LUMI (v4: Finnish end-to-end tests, 2026-10-13/15; first English run 2026-10-15).
 
 > **This tool is meant for production-scale samples.** Sampling reads every selected shard in full: a reservoir sample cannot stop early. HPLT English is ~18 TB compressed. Use `--dry-run` to see the scope before submitting, and `--wds` to narrow it where your data needs allow. If you only need a few hundred documents to inspect, read a shard directly: `zstdcat <shard>.jsonl.zst | head -n 1000`.
 
@@ -25,11 +25,11 @@ Copy the preset for your system and set `ACCOUNT`:
 
 ```
 cp presets/lumi.conf hplt-sampler.conf    # LUMI
-cp presets/puhti.conf hplt-sampler.conf   # Puhti
-cp presets/mahti.conf hplt-sampler.conf   # Mahti
 ```
 
-With no preset, copy `hplt-sampler.conf.example` and fill in all values. `hplt-sampler.conf` is gitignored and never committed. Run interactively without a conf file and the orchestrator prompts for the values (LUMI, Puhti and Mahti are auto-detected and their preset defaults pre-filled).
+(`presets/puhti.conf` and `presets/mahti.conf` are deprecated: CSC has decommissioned both machines.)
+
+With no preset, copy `hplt-sampler.conf.example` and fill in all values. `hplt-sampler.conf` is gitignored and never committed. Run interactively without a conf file and the orchestrator prompts for the values (LUMI is auto-detected and its preset defaults pre-filled).
 
 Configuration keys:
 
@@ -160,6 +160,5 @@ python3 check.py <LANG> --plan ./results-<...>/plan.jsonl --samples-dir ./result
 ## Known limitations / TODO
 
 - **Roihu**: the preset is a stub; partition and module details are still to be filled in.
-- **Puhti** has only been tested with smaller languages.
 - **HPLT v2** is not supported. Local mode should work for a local v3 copy (`--local-root`) but is untested.
 - **Shared counts cache**: counts are stable per corpus version, so a group-shared `COUNTS_DIR` (e.g. in LUMI `projappl/`) would spare other users the counting. Pending a shared path under the project allocation.
