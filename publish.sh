@@ -7,7 +7,8 @@
 # The sample lands at <DEST_PREFIX>/<corpus>/<lang>/<wds>-n<n_samples>-s<seed>/ as
 #   samples.jsonl.zst  run.json  plan.jsonl  shard_list.txt  [shard_inventory.tsv]
 #   validation.json  SHA256SUMS
-# Contract: only runs that pass validate.py are published, and a published sample
+# Contract: publish only samples others will read (not intermediates of one build);
+# only runs that pass validate.py are published, and a published sample
 # is never overwritten (an existing destination aborts the publish).
 # Login-node friendly (zstd + rclone); RCLONE overrides the rclone binary.
 

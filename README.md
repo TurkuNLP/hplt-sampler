@@ -127,7 +127,7 @@ bash publish.sh results-<...> [DEST_PREFIX]      # default: lumi-462001491-priva
 
 - `validate.py RUNDIR` (run first by `publish.sh`, or on its own) does structural checks only: run record present, plan covers the shard list, record count equals the plan, every record parses, ids present and unique, and whether the corpus files still match `shard_inventory.tsv`. It writes `validation.json`; any failure stops the publish.
 - `publish.sh` compresses the sample (`samples.jsonl.zst`), uploads it with `run.json`, `plan.jsonl`, the shard list and inventory, `validation.json` and `SHA256SUMS` to `<DEST_PREFIX>/<corpus>/<lang>/<wds>-n<N>-s<seed>/`, and verifies the upload by downloading and comparing.
-- **Contract:** only validated samples are published, and an existing destination is never overwritten. Downstream tools read samples from there, not from raw shards. Needs `rclone` configured for the destination (on LUMI: `module load lumio; lumio-conf`).
+- **Contract:** publish only samples that someone other than the drawing session will read (a reference sample, or the input of a dataset others rebuild from); intermediate pools that feed a single build stay on scratch, and their `run.json`, shard inventory and `validation.json` are kept with what they built. What is published has passed validation, and an existing destination is never overwritten. Downstream tools read samples from there, not from raw shards. Needs `rclone` configured for the destination (on LUMI: `module load lumio; lumio-conf`).
 
 ## Manual steps and verification
 
