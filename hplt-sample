@@ -1,0 +1,12 @@
+#!/bin/bash
+# Submit an HPLT sampling run. Reads hplt-sampler.conf next to this script, then
+# runs submit.py with the conf's PYTHON. Usage: hplt-sample --help
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [[ -f "${HERE}/hplt-sampler.conf" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${HERE}/hplt-sampler.conf"
+  set +a
+fi
+exec "${PYTHON:-python3}" "${HERE}/submit.py" "$@"

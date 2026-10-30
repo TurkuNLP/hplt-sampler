@@ -1,85 +1,39 @@
-import os
-import sys
-import time
+"""Proportional sampling plan: how many documents to draw from each shard.
+
+Used in-process by the submitter when every shard's count is in the index, and as
+the plan job (`plan.py RUNDIR`) when some shards had to be counted first: it then
+merges the run's fresh counts into the index and plans from the index.
+
+Standard library only; runs under Python 3.6 (LUMI's /usr/bin/python3).
+"""
+import argparse
+import glob
 import json
 import math
-import argparse
+import os
+import sys
+
+import countsindex
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Aggregate per-shard counts and write a proportional sampling plan.")
-    parser.add_argument("lang")
-    parser.add_argument("--n-samples", type=int, default=1000000)
-    parser.add_argument("--shard-list", default=None)
-    parser.add_argument("--counts-dir", default=None)
-    parser.add_argument("--out", default=None)
-    parser.add_argument("--poll-interval", type=int, default=10)
-    args = parser.parse_args()
+def allocate(shards, n_samples):
+    """shards: [{"filename", "url", "count"}] in shard-list order -> plan entries.
 
-    root = os.path.dirname(__file__)
-    shard_list = args.shard_list or os.path.join(os.getcwd(), f"shard_list_{args.lang}.txt")
-    counts_dir = args.counts_dir or os.path.join(root, "counts", args.lang)
-    out_file = args.out or os.path.join(root, f"{args.lang}_plan.jsonl")
-    n_samples = args.n_samples
-    poll = args.poll_interval
-
-    if not os.path.exists(shard_list):
-        print(f"Shard list not found: {shard_list}", file=sys.stderr)
-        return 2
-
-    with open(shard_list, "r", encoding="utf-8") as f:
-        urls = [ln.strip() for ln in f if ln.strip()]
-    expected_fnames = [u.split("/")[-1] for u in urls]
-    expected_set = set(expected_fnames)
-    expected_n = len(expected_fnames)
-
-    print(f"[PLAN] Expecting {expected_n} shard count files in {counts_dir}")
-
-    # wait for all per-shard count files to appear
-    while True:
-        if not os.path.isdir(counts_dir):
-            os.makedirs(counts_dir, exist_ok=True)
-        present = {fn[:-5] for fn in os.listdir(counts_dir) if fn.endswith(".json")}
-        have = len(present & expected_set)
-        print(f"[PLAN] Found {have}/{expected_n} shard count files", end="\r")
-        if have >= expected_n:
-            print()
-            break
-        time.sleep(poll)
-
-    # read counts
-    shards = []
-    total_docs = 0
-    for url in urls:
-        fname = url.split("/")[-1]
-        cf = os.path.join(counts_dir, f"{fname}.json")
-        if not os.path.exists(cf):
-            print(f"[PLAN] Missing count file for {fname}, aborting", file=sys.stderr)
-            return 3
-        with open(cf, "r", encoding="utf-8") as fh:
-            entry = json.load(fh)
-        cnt = int(entry.get("count", 0))
-        shards.append({"filename": fname, "url": url, "count": cnt})
-        total_docs += cnt
-
+    Proportional allocation; the remainder goes to the largest fractional parts,
+    within each shard's capacity."""
+    total_docs = sum(s["count"] for s in shards)
     if total_docs == 0:
-        print("[PLAN] No documents found across shards, exiting", file=sys.stderr)
-        return 4
-
+        raise ValueError("no documents across shards")
     if n_samples > total_docs:
-        print(f"[PLAN] Requested {n_samples} samples but only {total_docs} docs available; reducing")
+        print("[PLAN] Requested {} samples but only {} docs available; reducing".format(n_samples, total_docs))
         n_samples = total_docs
-
-    # proportional allocation with largest fractional remainder tie-break
     alloc = []
     for s in shards:
         exact = (n_samples * s["count"]) / total_docs
         base = math.floor(exact)
-        alloc.append({"filename": s["filename"], "url": s["url"], "count": s["count"], "n_take": int(min(base, s["count"])), "frac": exact - base})
-
+        alloc.append({"filename": s["filename"], "url": s["url"], "count": s["count"],
+                      "n_take": int(min(base, s["count"])), "frac": exact - base})
     remaining = n_samples - sum(a["n_take"] for a in alloc)
-
-    # distribute remaining to shards with largest fractional parts, respecting shard capacities
     candidates = sorted(alloc, key=lambda x: x["frac"], reverse=True)
     i = 0
     while remaining > 0 and any(a["n_take"] < a["count"] for a in candidates):
@@ -88,18 +42,57 @@ def main():
             a["n_take"] += 1
             remaining -= 1
         i += 1
+    return [{k: a[k] for k in ("filename", "url", "count", "n_take")} for a in alloc]
 
-    final_total = sum(a["n_take"] for a in alloc)
-    if final_total != n_samples:
-        print(f"[PLAN] Warning: final total {final_total} != planned {n_samples}. Proceeding with {final_total} samples.")
 
-    # write plan atomically
+def write_plan(entries, out_file):
     tmp = out_file + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        for a in alloc:
-            fh.write(json.dumps({"filename": a["filename"], "url": a["url"], "count": a["count"], "n_take": a["n_take"]}) + "\n")
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
     os.replace(tmp, out_file)
-    print(f"[PLAN] Wrote plan to {out_file} ({final_total} samples planned)")
+
+
+def from_index(urls, rows):
+    """Plan inputs for a shard list from index rows; also the shards with no trusted count."""
+    shards, missing = [], []
+    for u in urls:
+        c = countsindex.lookup(rows, u)
+        if c is None:
+            missing.append(u)
+        else:
+            shards.append({"filename": u.split("/")[-1], "url": u, "count": c})
+    return shards, missing
+
+
+def merge_run_counts(rundir, ipath):
+    """Merge the run's fresh per-shard counts (<rundir>/counts/*.json) into the index."""
+    new = []
+    for f in sorted(glob.glob(os.path.join(rundir, "counts", "*.json"))):
+        with open(f, encoding="utf-8") as fh:
+            e = json.load(fh)
+        new.append(countsindex.row(e["url"], e["count"], e.get("method", "scan"), e.get("bytes"), e.get("mtime")))
+    return countsindex.merge(ipath, new)
+
+
+def main():
+    p = argparse.ArgumentParser(description="Plan job: merge the run's fresh counts into the index and write plan.jsonl.")
+    p.add_argument("rundir")
+    args = p.parse_args()
+    with open(os.path.join(args.rundir, "run.json"), encoding="utf-8") as fh:
+        run = json.load(fh)
+    ipath = run["counts_index_file"]
+    n = merge_run_counts(args.rundir, ipath)
+    print("[PLAN] Merged {} fresh counts into {}".format(n, ipath))
+    with open(os.path.join(args.rundir, "shard_list.txt"), encoding="utf-8") as fh:
+        urls = [ln.strip() for ln in fh if ln.strip()]
+    shards, missing = from_index(urls, countsindex.read(ipath))
+    if missing:
+        print("[PLAN] ERROR: {} shards still have no trusted count, e.g. {}".format(len(missing), missing[0]), file=sys.stderr)
+        return 3
+    entries = allocate(shards, int(run["n_samples"]))
+    write_plan(entries, os.path.join(args.rundir, "plan.jsonl"))
+    print("[PLAN] Wrote plan ({} samples planned)".format(sum(e["n_take"] for e in entries)))
     return 0
 
 

@@ -86,6 +86,29 @@ def local_sample(path, n_take):
     return reservoir, total_seen
 
 
+def local_take_all(path, outfile):
+    """A shard taken whole: stream every line to outfile, in order.
+
+    The same output as the reservoir when n_take >= the shard's count (it then
+    keeps every line in order and never draws), without holding the shard in memory."""
+    total_seen = 0
+    with open(outfile, "w", encoding="utf-8") as fh:
+        for line in shardio.iter_local_lines(path):
+            fh.write(line.decode("utf-8", errors="replace").rstrip("\n") + "\n")
+            total_seen += 1
+    return total_seen
+
+
+def write_seen(outdir, fname, url, total_seen, n_take, size, mtime):
+    """Record what the sampling pass actually read, for the count check at finalize."""
+    side = os.path.join(outdir, f"{fname}.seen.json")
+    with open(side + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump({"filename": fname, "url": url, "docs": total_seen, "n_take": n_take,
+                   "bytes": size, "mtime": mtime}, fh)
+        fh.write("\n")
+    os.replace(side + ".tmp", side)
+
+
 def main():
     p = argparse.ArgumentParser(description="Reservoir-sample documents from a zstd-compressed shard.")
     p.add_argument("lang")
@@ -101,12 +124,15 @@ def main():
     args = p.parse_args()
 
     fname = args.shard_url.split("/")[-1]
-    if args.seed_base is not None:
-        # per-shard seed from run seed + filename: independent of shard order and array layout
-        digest = hashlib.sha256(f"{args.seed_base}:{fname}".encode("utf-8")).hexdigest()
-        random.seed(int(digest[:16], 16))
-    elif args.seed is not None:
-        random.seed(args.seed)
+
+    def seed():
+        # per-shard seed from run seed + filename: independent of shard order and task packing.
+        # Reseeded before every attempt, so a retried shard gives the same sample as a clean run.
+        if args.seed_base is not None:
+            digest = hashlib.sha256(f"{args.seed_base}:{fname}".encode("utf-8")).hexdigest()
+            random.seed(int(digest[:16], 16))
+        elif args.seed is not None:
+            random.seed(args.seed)
 
     script_root = os.path.dirname(__file__)
     plan_path = args.plan or os.path.join(script_root, f"{args.lang}_plan.jsonl")
@@ -120,6 +146,7 @@ def main():
         return 2
 
     n_take = None
+    planned_count = None
     with open(plan_path, "r", encoding="utf-8") as pf:
         for ln in pf:
             if not ln.strip():
@@ -130,6 +157,7 @@ def main():
                 continue
             if e.get("filename") == fname or e.get("url") == args.shard_url:
                 n_take = int(e.get("n_take", 0))
+                planned_count = e.get("count")
                 break
 
     if n_take is None:
@@ -152,18 +180,33 @@ def main():
         try:
             attempt += 1
             print(f"[SAMPLE] Attempt {attempt}/{args.retries} - streaming {args.shard_url}")
-            if shardio.is_local(args.shard_url):
-                reservoir, total_seen = local_sample(args.shard_url, n_take)
+            seed()
+            local = shardio.is_local(args.shard_url)
+            size = mtime = None
+            if local:
+                st = os.stat(args.shard_url)  # before the read, like a count
+                size, mtime = st.st_size, int(st.st_mtime)
+            if local and planned_count is not None and n_take >= int(planned_count):
+                total_seen = local_take_all(args.shard_url, tmpfile)
+                selected = total_seen
+                print(f"[SAMPLE] Took the whole shard: {total_seen} docs")
             else:
-                reservoir, total_seen = stream_sample(args.shard_url, n_take, timeout=args.timeout)
-            print(f"[SAMPLE] Streamed {total_seen} docs; selected {len(reservoir)}")
-
-            # atomic write
-            with open(tmpfile, "w", encoding="utf-8") as fh:
-                for ln in reservoir:
-                    fh.write(ln.rstrip("\n") + "\n")
+                if local:
+                    reservoir, total_seen = local_sample(args.shard_url, n_take)
+                else:
+                    reservoir, total_seen = stream_sample(args.shard_url, n_take, timeout=args.timeout)
+                selected = len(reservoir)
+                print(f"[SAMPLE] Streamed {total_seen} docs; selected {selected}")
+                with open(tmpfile, "w", encoding="utf-8") as fh:
+                    for ln in reservoir:
+                        fh.write(ln.rstrip("\n") + "\n")
+                del reservoir
+            # sidecar first, then the sample: an existing sample always has its sidecar
+            write_seen(outdir, fname, args.shard_url, total_seen, n_take, size, mtime)
             os.replace(tmpfile, outfile)
-            print(f"[SAMPLE] Wrote {len(reservoir)} samples to {outfile}")
+            print(f"[SAMPLE] Wrote {selected} samples to {outfile}")
+            if planned_count is not None and total_seen != int(planned_count):
+                print(f"[SAMPLE] WARNING: read {total_seen} docs, the plan's count is {planned_count}", file=sys.stderr)
             return 0
         except NET_ERRORS as e:
             err = f"network/decompression error: {e}"

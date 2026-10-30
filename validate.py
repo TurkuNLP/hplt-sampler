@@ -82,6 +82,13 @@ def main():
     if planned is not None:
         check(results, "count matches plan", n == planned, "{} records, {} planned".format(n, planned))
 
+    cc_path = os.path.join(rd, "count_check.json")
+    if os.path.exists(cc_path):  # runs from hplt-sample: every shard's read count against the plan
+        with open(cc_path, encoding="utf-8") as fh:
+            cc = json.load(fh)
+        check(results, "shard counts as planned", not cc["mismatched"] and not cc["missing"],
+              "{} shards checked, {} mismatched, {} missing".format(cc["checked"], len(cc["mismatched"]), len(cc["missing"])))
+
     if os.path.exists(inv_path):
         changed = []
         with open(inv_path, encoding="utf-8") as fh:

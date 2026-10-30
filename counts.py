@@ -88,10 +88,13 @@ def main():
             print(f"[COUNT] Attempt {attempt}/{args.retries} - counting lines in: {url}")
             entry = {"filename": fname, "url": url}
             if shardio.is_local(url):
+                st = os.stat(url)  # taken before the read: the count is valid for this size and mtime
+                entry["bytes"], entry["mtime"] = st.st_size, int(st.st_mtime)
                 count, method = shardio.count_local_lines(url)
                 entry["method"] = method
             else:
                 count = count_lines_from_url(url, timeout=args.timeout)
+                entry["method"] = "scan"
             print(f"[COUNT] Found {count} non-empty lines in {fname}")
 
             # atomic write
