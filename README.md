@@ -163,3 +163,7 @@ python3 shuffle.py results-<...>/samples.jsonl --seed-base <S>
 - **Roihu**: the preset is a stub; partition and module details are still to be filled in.
 - **HPLT v2** is not supported.
 - **One language per run.** Several languages in one submission (shared arrays over (language, shard) pairs) would need fewer queue slots than separate runs; not built.
+
+## Licence
+
+The code is licensed under the [Apache License 2.0](LICENSE).
