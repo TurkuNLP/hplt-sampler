@@ -166,6 +166,8 @@ def main():
     p.add_argument("--local-root", default="", help="local corpus root containing LANG/ (v4 default: the OpenEuroLLM copy on LUMI)")
     p.add_argument("--n-samples", type=int, default=1000000, help="global sample size (default: 1000000)")
     p.add_argument("--seed", type=int, default=None, help="run seed; per-shard seeds derive from it (default: drawn and recorded)")
+    p.add_argument("--allocation", choices=planner.METHODS, default="urn",
+                   help="urn: random draw, every document equally likely (default); round: rounded proportional shares, the method of runs before 2026-11-17")
     p.add_argument("--no-shuffle", action="store_true", help="keep the final sample grouped by shard")
     p.add_argument("--mem", default=None, help="memory per sample task, e.g. 32G (default: estimated from the plan, at least WORKER_MEM)")
     p.add_argument("--time", default=None, help="wall time per sample task, HH:MM:SS (default: estimated from shard sizes)")
@@ -190,6 +192,7 @@ def main():
         lang, corpus, local_root, wds = run["lang"], run["corpus"], run["local_root"], run["wds"]
         wds = "" if wds == "all" else wds
         seed, shuffle, n_samples = run["seed"], run["shuffle"], int(run["n_samples"])
+        allocation = run.get("allocation", "round")
         index_dir = run["counts_index"]
         tag = run["tag"]
         if run_jobs_queued(tag):
@@ -200,6 +203,7 @@ def main():
             shards = [ln.strip() for ln in fh if ln.strip()]
     else:
         lang, corpus, wds, n_samples, shuffle = a.lang, a.corpus, a.wds, a.n_samples, not a.no_shuffle
+        allocation = a.allocation
         local_root = a.local_root or (V4_DEFAULT_ROOT if corpus == "v4" else "")
         rundir, tag = run_dir(corpus, lang, wds)
         if os.path.exists(rundir) and not a.dry_run:
@@ -229,7 +233,7 @@ def main():
             entries = [json.loads(ln) for ln in fh if ln.strip()]
         unknown = []
     elif not unknown:
-        entries = planner.allocate(known, n_samples)
+        entries = planner.allocate(known, n_samples, allocation, seed)
     if a.resume:
         done_counts = {f[:-5] for f in os.listdir(os.path.join(rundir, "counts"))} if os.path.isdir(os.path.join(rundir, "counts")) else set()
         unknown = [s for s in unknown if s.split("/")[-1] not in done_counts]
@@ -269,7 +273,7 @@ def main():
 
     # report
     read_hours = nbytes / READ_RATE / 3600 if local else None
-    log("plan: {}".format("made now from the index ({} documents planned)".format(sum(e["n_take"] for e in entries))
+    log("plan ({} allocation): {}".format(allocation, "made now from the index ({} documents planned)".format(sum(e["n_take"] for e in entries))
                           if entries is not None and not a.resume else
                           "existing plan.jsonl" if entries is not None else
                           "after counting {} shards".format(len(unknown))))
@@ -312,7 +316,7 @@ def main():
             "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "lang": lang, "corpus": corpus, "local_root": local_root,
             "map_url": "" if local else V3_MAP.format(lang),
-            "wds": wds or "all", "n_samples": str(n_samples), "seed": seed, "shuffle": shuffle,
+            "wds": wds or "all", "n_samples": str(n_samples), "seed": seed, "allocation": allocation, "shuffle": shuffle,
             "n_shards": len(shards), "tag": tag,
             "counts_index": index_dir, "counts_index_file": ipath,
             "counts_known_at_submit": len(known),

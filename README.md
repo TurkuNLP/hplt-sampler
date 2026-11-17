@@ -2,7 +2,7 @@
 
 ## Overview
 
-End-to-end Slurm pipeline that draws a **simple random sample** of documents from a sharded HPLT corpus, allocated across shards in proportion to their document counts.
+End-to-end Slurm pipeline that draws a **simple random sample** of documents from a sharded HPLT corpus: every document of the selected shards is equally likely to be drawn, at any sample size.
 
 - **HPLT v3**: shards are streamed over HTTP from `data.hplt-project.org`.
 - **HPLT v4**: shards are read from a local copy (by default the OpenEuroLLM catalogue copy on LUMI). v4 has no usable public shard map (as of 2026-10-13 the `four/clean/*.map` files list `/three/` URLs).
@@ -57,6 +57,7 @@ Configuration keys:
 | `--local-root DIR` | v4: `/appl/local/openeurollm/training/catalogue/hplt/4.0/clean` | Local corpus root containing `LANG/` (e.g. `.../4.0/noisy`, or HPLT 3 at `.../hplt/3.0/sorted`) |
 | `--n-samples N` | 1000000 | Global sample size |
 | `--seed S` | drawn and recorded | Run seed (see Reproducibility) |
+| `--allocation urn\|round` | `urn` | How the sample is split across shards (see Allocation) |
 | `--no-shuffle` | shuffle | Keep the final sample grouped by shard |
 | `--mem M` | estimated | Memory per sample task; by default the largest reservoir in the plan (shards taken whole are streamed and need none), at least `WORKER_MEM` |
 | `--time T` | estimated | Wall time per sample task, from the bytes it reads |
@@ -100,11 +101,20 @@ Exact documents per shard, shared across runs and users: `<COUNTS_INDEX>/<corpus
 - **Checked:** sampling reads every shard in full, so it knows the true count at no cost. Finalize compares it with the plan; on any difference the allocation was wrong, the run stops before concatenation, the index row is corrected from the read, and the run should be redone from scratch.
 - **Written:** by the plan job (fresh counts) and finalize (corrections), under a file lock, replaced atomically. Rows come only from full reads.
 
+## Allocation
+
+The plan decides how many documents each shard supplies; the sample stage then draws that many uniformly within the shard (a reservoir).
+
+- **`urn` (default since 2026-11-17).** Number all documents of the selected shards, draw N of those numbers without replacement with a seed derived from the run seed, and count how many fall in each shard (a multivariate hypergeometric draw). Each shard's share is proportional to its count on average, and every document is exactly equally likely, however small N is. Planning 1M from 2.4 billion documents takes about 2 s.
+- **`round`** (all runs before 2026-11-17). Each shard's exact proportional share, rounded down, with the remainder going to the largest fractional parts. Deterministic, and fine when every shard supplies many documents (it moves at most one document per shard), but biased for small N: a shard whose share rounds to 0 and misses the remainder can never be sampled. English WDS 7 with N = 100 gives all 100 to the 100 largest of 240 shards, though the smaller half holds about half the documents. Use it only to reproduce an older run.
+
+`run.json` records the method (runs without the field used `round`). The two methods give different samples from the same seed.
+
 ## WDS filtering
 
 HPLT shards are organised by Web Docs Scorer (WDS) score, which the filename starts with: `9_1.jsonl.zst`, `10_3.jsonl.zst`; v4 English adds a source tag, `8_30.ia.jsonl.zst` (`cc` Common Crawl, `ia` Internet Archive, `ab` ArchiveBot). See [web-docs-scorer](https://github.com/pablop16n/web-docs-scorer). In v4 the per-document score is `doc_scores[0]` on a 0–1 scale, and the shard prefix is `floor(10 × score)`. HPLT v3 shards and the v4 "clean" subset cover scores 5–10. The match is anchored on `<score>_`, so `--wds 1` does not pick up WDS-10 shards.
 
-**Sampling is proportional across all selected shards.** If WDS 9 holds 99× more documents than WDS 10, the sample reflects that ratio. For equal numbers per score, run once per score; each run gets its own directory:
+**Sampling is uniform across all selected shards.** If WDS 9 holds 99× more documents than WDS 10, the sample reflects that ratio. For equal numbers per score, run once per score; each run gets its own directory:
 
 ```
 ./hplt-sample eng_Latn --corpus v4 --wds 9  --n-samples 100000 --seed 1
@@ -113,7 +123,7 @@ HPLT shards are organised by Web Docs Scorer (WDS) score, which the filename sta
 
 ## Reproducibility
 
-Every run has a seed: `--seed S`, or one drawn and written to `run.json`. Each shard's seed is derived from the run seed and the shard filename (and reset before every retry), and the final shuffle's seed from the run seed, so a rerun with the same seed, corpus, shard list and counts reproduces the sample exactly, independent of shard order and task packing (verified 2026-10-30 against a run made by the earlier orchestrator). Commit your changes before a production run so `sampler_commit` in `run.json` identifies the code.
+Every run has a seed: `--seed S`, or one drawn and written to `run.json`. Each shard's seed is derived from the run seed and the shard filename (and reset before every retry), and the final shuffle's seed from the run seed, so a rerun with the same seed, allocation method, corpus, shard list and counts reproduces the sample exactly, independent of shard order and task packing (verified 2026-10-30 against a run made by the earlier orchestrator). Commit your changes before a production run so `sampler_commit` in `run.json` identifies the code.
 
 ## Resources and limits
 
