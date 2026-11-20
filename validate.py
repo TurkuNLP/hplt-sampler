@@ -41,7 +41,12 @@ def main():
           "samples/ absent (concat completed)")
 
     planned = None
-    if check(results, "plan", os.path.exists(plan_path), plan_path):
+    extract = run is not None and run.get("mode") == "extract"
+    if extract:
+        with open(os.path.join(rd, "ids.txt"), encoding="utf-8") as fh:
+            wanted = {ln.strip() for ln in fh if ln.strip()}
+        planned = len(wanted)
+    elif check(results, "plan", os.path.exists(plan_path), plan_path):
         with open(plan_path, encoding="utf-8") as fh:
             plan = [json.loads(ln) for ln in fh if ln.strip()]
         planned = sum(int(e["n_take"]) for e in plan)
@@ -79,8 +84,18 @@ def main():
     check(results, "records parse", bad == 0, "{} records, {} unparseable".format(n, bad))
     check(results, "ids present", no_id == 0, "{} records without id".format(no_id))
     check(results, "ids unique", dup == 0, "{} duplicate ids".format(dup))
+    if extract:
+        check(results, "ids exactly the requested ones", ids == wanted,
+              "{} requested, {} found, {} not requested".format(len(wanted), len(ids & wanted), len(ids - wanted)))
     if planned is not None:
-        check(results, "count matches plan", n == planned, "{} records, {} planned".format(n, planned))
+        check(results, "count matches plan" if not extract else "count matches id list", n == planned,
+              "{} records, {} {}".format(n, planned, "requested" if extract else "planned"))
+
+    ec_path = os.path.join(rd, "extract_check.json")
+    if os.path.exists(ec_path):
+        with open(ec_path, encoding="utf-8") as fh:
+            ec = json.load(fh)
+        check(results, "every shard read", not ec["missing_shards"], "{} shards missing".format(len(ec["missing_shards"])))
 
     cc_path = os.path.join(rd, "count_check.json")
     if os.path.exists(cc_path):  # runs from hplt-sample: every shard's read count against the plan

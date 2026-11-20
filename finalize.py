@@ -1,4 +1,5 @@
 """Finalize check: did every shard hold as many documents as the plan assumed?
+(Extract mode: was every listed id found exactly once? See extract_check.)
 
 The plan allocates from counts (mostly the shared index); sampling reads each shard
 in full, so it knows the true count for free. On any mismatch the allocation was
@@ -19,6 +20,8 @@ def main():
     rundir = sys.argv[1]
     with open(os.path.join(rundir, "run.json"), encoding="utf-8") as fh:
         run = json.load(fh)
+    if run.get("mode") == "extract":
+        return extract_check(rundir, run)
     with open(os.path.join(rundir, "plan.jsonl"), encoding="utf-8") as fh:
         plan = [json.loads(ln) for ln in fh if ln.strip()]
     sdir = os.path.join(rundir, "samples")
@@ -61,6 +64,56 @@ def main():
                   mismatched[0]["read"], updated), file=sys.stderr)
         return 1
     print("[FINALIZE] Count check passed: {} shards read exactly as planned; {} index rows added or refreshed".format(checked, updated))
+    return 0
+
+
+def extract_check(rundir, run):
+    """Extract mode: every shard read, every listed id found exactly once.
+
+    Writes extract_check.json; the shards' read counts refresh the counts index."""
+    sdir = os.path.join(rundir, "samples")
+    with open(os.path.join(rundir, "shard_list.txt"), encoding="utf-8") as fh:
+        shards = [ln.strip() for ln in fh if ln.strip()]
+    with open(os.path.join(rundir, "ids.txt"), encoding="utf-8") as fh:
+        wanted = {ln.strip() for ln in fh if ln.strip()}
+    ipath = run.get("counts_index_file")
+    rows = countsindex.read(ipath) if ipath else {}
+    missing_shards, fresh, found, dup = [], [], {}, []
+    for url in shards:
+        fname = url.split("/")[-1]
+        out, side = os.path.join(sdir, fname + ".jsonl"), os.path.join(sdir, fname + ".seen.json")
+        if not (os.path.exists(out) and os.path.exists(side)):
+            missing_shards.append(fname)
+            continue
+        with open(side, encoding="utf-8") as fh:
+            seen = json.load(fh)
+        r = rows.get(fname)
+        if r is None or r.get("docs") != str(seen["docs"]) or r.get("bytes") != str(seen["bytes"]):
+            fresh.append(countsindex.row(url, seen["docs"], "scan", seen["bytes"], seen["mtime"]))
+        with open(out, encoding="utf-8") as fh:
+            for ln in fh:
+                rid = json.loads(ln)["id"]
+                if rid in found:
+                    dup.append(rid)
+                found[rid] = fname
+    not_found = sorted(wanted - set(found))
+    updated = countsindex.merge(ipath, fresh) if ipath else 0
+    out = {"ids": len(wanted), "found": len(found), "not_found": not_found, "duplicates": sorted(set(dup)),
+           "missing_shards": missing_shards, "index_rows_updated": updated}
+    with open(os.path.join(rundir, "extract_check.json"), "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=2)
+        fh.write("\n")
+    if missing_shards:
+        print("[FINALIZE] ERROR: {} shards have no output yet (e.g. {}); resume the run".format(
+            len(missing_shards), missing_shards[0]), file=sys.stderr)
+        return 1
+    if not_found or dup:
+        print("[FINALIZE] ERROR: {} of {} ids not found in the selected shards, {} found more than once "
+              "(e.g. {}). Details: extract_check.json; per-shard outputs kept in samples/".format(
+                  len(not_found), len(wanted), len(set(dup)), (not_found or dup)[0]), file=sys.stderr)
+        return 1
+    print("[FINALIZE] Extract check passed: all {} ids found exactly once in {} shards; {} index rows added or refreshed".format(
+        len(wanted), len(shards), updated))
     return 0
 
 

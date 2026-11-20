@@ -63,6 +63,7 @@ Configuration keys:
 | `--time T` | estimated | Wall time per sample task, from the bytes it reads |
 | `--max-tasks N` | `MAX_TASKS` | Array tasks this run may queue |
 | `--counts-index DIR` | `COUNTS_INDEX` | Counts index to use |
+| `--ids FILE` | | Extract mode: write exactly the documents whose id is listed (one per line) instead of a sample (see Extract mode) |
 | `--resume RUNDIR` | | Resubmit only what an interrupted run has not finished (refused while its jobs are still queued) |
 | `--dry-run` | | Show shards, known counts, the job layout, memory, wall time and read volume; writes and submits nothing |
 
@@ -109,6 +110,19 @@ The plan decides how many documents each shard supplies; the sample stage then d
 - **`round`** (all runs before 2026-11-17). Each shard's exact proportional share, rounded down, with the remainder going to the largest fractional parts. Deterministic, and fine when every shard supplies many documents (it moves at most one document per shard), but biased for small N: a shard whose share rounds to 0 and misses the remainder can never be sampled. English WDS 7 with N = 100 gives all 100 to the 100 largest of 240 shards, though the smaller half holds about half the documents. Use it only to reproduce an older run.
 
 `run.json` records the method (runs without the field used `round`). The two methods give different samples from the same seed.
+
+## Extract mode
+
+`--ids FILE` turns a run into an extraction: every selected shard is read in full, and each document whose `id` is listed is written as-is (all fields, the line unchanged). Use it to get full records for documents chosen elsewhere, for example a study dataset built from a sample whose intermediate pools are gone.
+
+```
+./hplt-sample eng_Latn --corpus v4 --ids prototypicality-ids.txt
+```
+
+- No plan and no allocation; the run directory is `results-<corpus>-<lang>-<wds>-ids-<file stem>/`, with `ids.txt` (the deduplicated list) and the usual `run.json` (`"mode": "extract"`). Not shuffled: records come grouped by shard.
+- Narrow the shards with `--wds` when the documents' scores are known; otherwise the whole language is read (English v4 `clean`: 18 TB, ~63 task-hours, under an hour of wall time).
+- Finalize writes `extract_check.json` and stops if any shard was not read, an id was not found, or an id was found twice; `validate.py` checks that the records are exactly the listed ids. Every shard's read count refreshes the counts index, as in a sample run.
+- Local shards only (HPLT v4, and HPLT 3 via `--local-root`).
 
 ## WDS filtering
 

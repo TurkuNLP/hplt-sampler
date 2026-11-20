@@ -2,10 +2,10 @@
 # Worker for hplt-sample: submitted by the submitter with --account, --partition, --mem,
 # --time and the environment below; not meant to be run by hand.
 #
-#   MODE=count|sample   one array task = one packed list of shards: ${RUNDIR}/tasks/${MODE}-NNN.txt
+#   MODE=count|sample|extract   one array task = one packed list of shards: ${RUNDIR}/tasks/${MODE}-NNN.txt
 #   MODE=plan           merge the run's fresh counts into the index, write plan.jsonl
-#   MODE=finalize       check every shard's read count against the plan (and index),
-#                       then concatenate and shuffle
+#   MODE=finalize       check every shard's read count against the plan (and index), or in
+#                       extract mode every id found once; then concatenate (and shuffle)
 #
 #SBATCH --job-name=hplt_sampler
 #SBATCH --nodes=1
@@ -25,7 +25,7 @@ FINAL_FILE="${RUNDIR}/samples.jsonl"
 HPLT_LANG="$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["lang"])' "${RUNDIR}/run.json")"
 
 case "${MODE}" in
-  count|sample)
+  count|sample|extract)
     TASK_FILE=$(printf '%s/tasks/%s-%03d.txt' "${RUNDIR}" "${MODE}" "${SLURM_ARRAY_TASK_ID:?array task id}")
     echo "[WORKER] MODE=${MODE} task ${SLURM_ARRAY_TASK_ID}: $(wc -l < "${TASK_FILE}") shards"
     failed=0
@@ -33,6 +33,8 @@ case "${MODE}" in
       [[ -z "${SHARD}" ]] && continue
       if [[ "${MODE}" == count ]]; then
         "${PYTHON}" -u "${HERE}/counts.py" "${HPLT_LANG}" "${SHARD}" --counts-dir "${RUNDIR}/counts" || failed=$((failed + 1))
+      elif [[ "${MODE}" == extract ]]; then
+        "${PYTHON}" -u "${HERE}/extract.py" "${SHARD}" --ids "${RUNDIR}/ids.txt" --outdir "${SAMPLES_DIR}" || failed=$((failed + 1))
       else
         "${PYTHON}" -u "${HERE}/sample.py" "${HPLT_LANG}" "${SHARD}" --plan "${RUNDIR}/plan.jsonl" \
           --outdir "${SAMPLES_DIR}" --seed-base "${SEED_BASE:?SEED_BASE required}" || failed=$((failed + 1))

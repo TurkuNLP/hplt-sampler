@@ -168,6 +168,8 @@ def main():
     p.add_argument("--seed", type=int, default=None, help="run seed; per-shard seeds derive from it (default: drawn and recorded)")
     p.add_argument("--allocation", choices=planner.METHODS, default="urn",
                    help="urn: random draw, every document equally likely (default); round: rounded proportional shares, the method of runs before 2026-11-17")
+    p.add_argument("--ids", metavar="FILE", default=None,
+                   help="extract mode: instead of a random sample, write exactly the documents whose id is listed (one per line); reads every selected shard")
     p.add_argument("--no-shuffle", action="store_true", help="keep the final sample grouped by shard")
     p.add_argument("--mem", default=None, help="memory per sample task, e.g. 32G (default: estimated from the plan, at least WORKER_MEM)")
     p.add_argument("--time", default=None, help="wall time per sample task, HH:MM:SS (default: estimated from shard sizes)")
@@ -193,6 +195,7 @@ def main():
         wds = "" if wds == "all" else wds
         seed, shuffle, n_samples = run["seed"], run["shuffle"], int(run["n_samples"])
         allocation = run.get("allocation", "round")
+        extract = run.get("mode") == "extract"
         index_dir = run["counts_index"]
         tag = run["tag"]
         if run_jobs_queued(tag):
@@ -204,8 +207,19 @@ def main():
     else:
         lang, corpus, wds, n_samples, shuffle = a.lang, a.corpus, a.wds, a.n_samples, not a.no_shuffle
         allocation = a.allocation
+        extract = a.ids is not None
         local_root = a.local_root or (V4_DEFAULT_ROOT if corpus == "v4" else "")
         rundir, tag = run_dir(corpus, lang, wds)
+        if extract:
+            if not local_root:
+                die("--ids reads local shards only: use --corpus v4, or --local-root for HPLT 3")
+            with open(a.ids, encoding="utf-8") as fh:
+                ids = sorted({ln.strip() for ln in fh if ln.strip()})
+            if not ids:
+                die("no ids in " + a.ids)
+            stem = os.path.splitext(os.path.basename(a.ids))[0]
+            rundir, tag = rundir + "-ids-" + stem, tag + "-ids-" + stem
+            n_samples, shuffle, allocation = len(ids), False, None
         if os.path.exists(rundir) and not a.dry_run:
             die("{} exists: resume it with --resume, or move it away".format(rundir))
         seed = a.seed if a.seed is not None else random.SystemRandom().randrange(1, 2 ** 30)
@@ -228,22 +242,26 @@ def main():
     # what still has to run
     plan_path = os.path.join(rundir, "plan.jsonl")
     entries = None
-    if a.resume and os.path.exists(plan_path):
+    if extract:  # no plan: every shard is read, and its count is checked against the index at finalize
+        unknown = []
+    elif a.resume and os.path.exists(plan_path):
         with open(plan_path, encoding="utf-8") as fh:
             entries = [json.loads(ln) for ln in fh if ln.strip()]
         unknown = []
     elif not unknown:
         entries = planner.allocate(known, n_samples, allocation, seed)
+    work = "extract" if extract else "sample"
     if a.resume:
         done_counts = {f[:-5] for f in os.listdir(os.path.join(rundir, "counts"))} if os.path.isdir(os.path.join(rundir, "counts")) else set()
         unknown = [s for s in unknown if s.split("/")[-1] not in done_counts]
         sdir = os.path.join(rundir, "samples")
+        # (extract mode: entries is None, so every shard without an output is redone)
         have = {f[:-6] for f in os.listdir(sdir) if f.endswith(".jsonl")} if os.path.isdir(sdir) else set()
         take = {e["filename"]: e["n_take"] for e in entries} if entries else None
         to_sample = [s for s in shards if s.split("/")[-1] not in have and (take is None or take.get(s.split("/")[-1], 1) > 0)]
     else:
         to_sample = shards
-    need_plan = entries is None
+    need_plan = entries is None and not extract
 
     # task layout within the queue budget
     avail = max_tasks - (0 if a.dry_run else user_jobs())
@@ -257,6 +275,8 @@ def main():
     # memory: the largest reservoir a task holds (a shard taken whole is streamed, not held)
     if a.mem:
         mem = a.mem
+    elif extract:
+        mem = base_mem  # a line is kept or not; nothing is held
     elif entries is not None and local:
         need = 0.0
         for e in entries:
@@ -273,15 +293,18 @@ def main():
 
     # report
     read_hours = nbytes / READ_RATE / 3600 if local else None
-    log("plan ({} allocation): {}".format(allocation, "made now from the index ({} documents planned)".format(sum(e["n_take"] for e in entries))
+    if extract:
+        log("extract: {} ids, every selected shard read in full; no plan".format(n_samples))
+    else:
+        log("plan ({} allocation): {}".format(allocation, "made now from the index ({} documents planned)".format(sum(e["n_take"] for e in entries))
                           if entries is not None and not a.resume else
                           "existing plan.jsonl" if entries is not None else
                           "after counting {} shards".format(len(unknown))))
     if count_bins:
         log("count array: {} tasks over {} shards, {} each".format(len(count_bins), len(unknown), count_time))
     if sample_bins:
-        log("sample array: {} tasks over {} shards, {} each, mem {}".format(len(sample_bins), len(to_sample), sample_time, mem))
-    log("finalize: count check, concatenation{}".format("" if not shuffle else ", shuffle"))
+        log("{} array: {} tasks over {} shards, {} each, mem {}".format(work, len(sample_bins), len(to_sample), sample_time, mem))
+    log("finalize: {}, concatenation{}".format("id check" if extract else "count check", "" if not shuffle else ", shuffle"))
     if read_hours is not None:
         reads = 2 if unknown else 1
         log("reads: {:.1f} GB compressed, ~{:.1f} task-hours per full read, {} read{}".format(
@@ -305,7 +328,10 @@ def main():
                                input="\n".join(shards) + "\n", stdout=fh, universal_newlines=True, check=True)
         if entries is not None:
             planner.write_plan(entries, plan_path)
-    for mode, bins in (("count", count_bins), ("sample", sample_bins)):
+        if extract:
+            with open(os.path.join(rundir, "ids.txt"), "w", encoding="utf-8") as fh:
+                fh.write("\n".join(ids) + "\n")
+    for mode, bins in (("count", count_bins), (work, sample_bins)):
         for i, b in enumerate(bins):
             with open(os.path.join(rundir, "tasks", "{}-{:03d}.txt".format(mode, i)), "w", encoding="utf-8") as fh:
                 fh.write("\n".join(b) + "\n")
@@ -317,6 +343,7 @@ def main():
             "lang": lang, "corpus": corpus, "local_root": local_root,
             "map_url": "" if local else V3_MAP.format(lang),
             "wds": wds or "all", "n_samples": str(n_samples), "seed": seed, "allocation": allocation, "shuffle": shuffle,
+            "mode": work, "ids_source": os.path.abspath(a.ids) if extract else None,
             "n_shards": len(shards), "tag": tag,
             "counts_index": index_dir, "counts_index_file": ipath,
             "counts_known_at_submit": len(known),
@@ -350,7 +377,7 @@ def main():
     if need_plan:
         last = submit("plan", ["--mem=" + base_mem, "--time=00:30:00"], last)
     if sample_bins:
-        last = submit("sample", ["--array=0-{}".format(len(sample_bins) - 1), "--mem=" + mem, "--time=" + sample_time], last)
+        last = submit(work, ["--array=0-{}".format(len(sample_bins) - 1), "--mem=" + mem, "--time=" + sample_time], last)
     submit("finalize", ["--mem=" + base_mem, "--time=24:00:00"], last)
 
     run["submissions"].append({"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
