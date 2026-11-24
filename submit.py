@@ -170,6 +170,8 @@ def main():
                    help="urn: random draw, every document equally likely (default); round: rounded proportional shares, the method of runs before 2026-11-17")
     p.add_argument("--ids", metavar="FILE", default=None,
                    help="extract mode: instead of a random sample, write exactly the documents whose id is listed (one per line); reads every selected shard")
+    p.add_argument("--count-only", action="store_true",
+                   help="only count the selected shards that the counts index does not know yet, and add them to it; no sample")
     p.add_argument("--no-shuffle", action="store_true", help="keep the final sample grouped by shard")
     p.add_argument("--mem", default=None, help="memory per sample task, e.g. 32G (default: estimated from the plan, at least WORKER_MEM)")
     p.add_argument("--time", default=None, help="wall time per sample task, HH:MM:SS (default: estimated from shard sizes)")
@@ -196,6 +198,7 @@ def main():
         seed, shuffle, n_samples = run["seed"], run["shuffle"], int(run["n_samples"])
         allocation = run.get("allocation", "round")
         extract = run.get("mode") == "extract"
+        count_only = run.get("mode") == "count"
         index_dir = run["counts_index"]
         tag = run["tag"]
         if run_jobs_queued(tag):
@@ -208,6 +211,9 @@ def main():
         lang, corpus, wds, n_samples, shuffle = a.lang, a.corpus, a.wds, a.n_samples, not a.no_shuffle
         allocation = a.allocation
         extract = a.ids is not None
+        count_only = a.count_only
+        if extract and count_only:
+            die("--ids and --count-only exclude each other")
         local_root = a.local_root or (V4_DEFAULT_ROOT if corpus == "v4" else "")
         rundir, tag = run_dir(corpus, lang, wds)
         if extract:
@@ -220,6 +226,13 @@ def main():
             stem = os.path.splitext(os.path.basename(a.ids))[0]
             rundir, tag = rundir + "-ids-" + stem, tag + "-ids-" + stem
             n_samples, shuffle, allocation = len(ids), False, None
+        if count_only:
+            # the subset is in the name: clean, noisy and poor hold the same languages
+            sub = os.path.basename(os.path.normpath(local_root)) if local_root else "map"
+            prefix = "" if corpus == "v3" else corpus + "-"
+            tag = "{}{}-{}-{}-counts".format(prefix, sub, lang, (wds or "all").replace(",", "+"))
+            rundir = os.path.join(os.getcwd(), "results-" + tag)
+            n_samples, shuffle, allocation = 0, False, None
         if os.path.exists(rundir) and not a.dry_run:
             die("{} exists: resume it with --resume, or move it away".format(rundir))
         seed = a.seed if a.seed is not None else random.SystemRandom().randrange(1, 2 ** 30)
@@ -242,7 +255,11 @@ def main():
     # what still has to run
     plan_path = os.path.join(rundir, "plan.jsonl")
     entries = None
-    if extract:  # no plan: every shard is read, and its count is checked against the index at finalize
+    if count_only:
+        if not unknown:
+            log("every shard is in the counts index already; nothing to count")
+            return 0
+    elif extract:  # no plan: every shard is read, and its count is checked against the index at finalize
         unknown = []
     elif a.resume and os.path.exists(plan_path):
         with open(plan_path, encoding="utf-8") as fh:
@@ -250,7 +267,7 @@ def main():
         unknown = []
     elif not unknown:
         entries = planner.allocate(known, n_samples, allocation, seed)
-    work = "extract" if extract else "sample"
+    work = "extract" if extract else "count" if count_only else "sample"
     if a.resume:
         done_counts = {f[:-5] for f in os.listdir(os.path.join(rundir, "counts"))} if os.path.isdir(os.path.join(rundir, "counts")) else set()
         unknown = [s for s in unknown if s.split("/")[-1] not in done_counts]
@@ -261,11 +278,15 @@ def main():
         to_sample = [s for s in shards if s.split("/")[-1] not in have and (take is None or take.get(s.split("/")[-1], 1) > 0)]
     else:
         to_sample = shards
-    need_plan = entries is None and not extract
+    if count_only:
+        to_sample = []
+    need_plan = entries is None and not extract and not count_only
 
     # task layout within the queue budget
     avail = max_tasks - (0 if a.dry_run else user_jobs())
-    n_count = min(len(unknown), max(1, avail // 3)) if unknown else 0
+    n_count = min(len(unknown), max(1, avail - 1 if count_only else avail // 3)) if unknown else 0
+    if count_only and avail < 2:
+        die("no room in the queue: {} jobs allowed, {} already queued by you".format(max_tasks, max_tasks - avail))
     n_sample = min(len(to_sample), avail - n_count - (1 if need_plan else 0) - 1)
     if to_sample and n_sample < 1:
         die("no room in the queue: {} jobs allowed, {} already queued by you".format(max_tasks, max_tasks - avail))
@@ -295,6 +316,8 @@ def main():
     read_hours = nbytes / READ_RATE / 3600 if local else None
     if extract:
         log("extract: {} ids, every selected shard read in full; no plan".format(n_samples))
+    elif count_only:
+        log("count only: {} of {} shards not in the index".format(len(unknown), len(shards)))
     else:
         log("plan ({} allocation): {}".format(allocation, "made now from the index ({} documents planned)".format(sum(e["n_take"] for e in entries))
                           if entries is not None and not a.resume else
@@ -304,9 +327,12 @@ def main():
         log("count array: {} tasks over {} shards, {} each".format(len(count_bins), len(unknown), count_time))
     if sample_bins:
         log("{} array: {} tasks over {} shards, {} each, mem {}".format(work, len(sample_bins), len(to_sample), sample_time, mem))
-    log("finalize: {}, concatenation{}".format("id check" if extract else "count check", "" if not shuffle else ", shuffle"))
+    if count_only:
+        log("index: merge the counts into {}".format(ipath))
+    else:
+        log("finalize: {}, concatenation{}".format("id check" if extract else "count check", "" if not shuffle else ", shuffle"))
     if read_hours is not None:
-        reads = 2 if unknown else 1
+        reads = 2 if unknown and not count_only else 1
         log("reads: {:.1f} GB compressed, ~{:.1f} task-hours per full read, {} read{}".format(
             nbytes / 1e9, read_hours, reads, "s" if reads > 1 else ""))
     if a.dry_run:
@@ -378,13 +404,17 @@ def main():
         last = submit("plan", ["--mem=" + base_mem, "--time=00:30:00"], last)
     if sample_bins:
         last = submit(work, ["--array=0-{}".format(len(sample_bins) - 1), "--mem=" + mem, "--time=" + sample_time], last)
-    submit("finalize", ["--mem=" + base_mem, "--time=24:00:00"], last)
+    if count_only:
+        submit("index", ["--mem=" + base_mem, "--time=00:30:00"], last)
+    else:
+        submit("finalize", ["--mem=" + base_mem, "--time=24:00:00"], last)
 
     run["submissions"].append({"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                "jobs": jobs, "count_tasks": len(count_bins), "sample_tasks": len(sample_bins),
                                "sample_mem": mem, "sample_time": sample_time})
     write_run(rundir, run)
-    log("run directory {}; logs in logs/; done when samples.jsonl appears (squeue --me to watch)".format(rundir))
+    log("run directory {}; logs in logs/; done when {} (squeue --me to watch)".format(
+        rundir, "the index job has merged the counts" if count_only else "samples.jsonl appears"))
     return 0
 
 

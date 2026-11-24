@@ -1,0 +1,15 @@
+#!/bin/bash
+# Driver job for count_all.py: sleeps and submits, one core. Usage (from the directory
+# that should hold the run directories):
+#   sbatch --account=project_462001491 /path/to/sl-count-all ROOT[=CORPUS] ...
+#SBATCH --job-name=hplt_count-all
+#SBATCH --partition=small
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --time=72:00:00
+set -euo pipefail
+HERE="${SAMPLER_HOME:-$(dirname "$(readlink -f "$0")")}"
+set -a; source "${HERE}/hplt-sampler.conf"; set +a
+exec "${PYTHON:-python3}" -u "${HERE}/count_all.py" "$@"

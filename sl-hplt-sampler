@@ -4,6 +4,7 @@
 #
 #   MODE=count|sample|extract   one array task = one packed list of shards: ${RUNDIR}/tasks/${MODE}-NNN.txt
 #   MODE=plan           merge the run's fresh counts into the index, write plan.jsonl
+#   MODE=index          count-only run: merge the run's fresh counts into the index, nothing else
 #   MODE=finalize       check every shard's read count against the plan (and index), or in
 #                       extract mode every id found once; then concatenate (and shuffle)
 #
@@ -47,6 +48,9 @@ case "${MODE}" in
     ;;
   plan)
     "${PYTHON}" -u "${HERE}/plan.py" "${RUNDIR}"
+    ;;
+  index)
+    "${PYTHON}" -u "${HERE}/plan.py" "${RUNDIR}" --index-only
     ;;
   finalize)
     "${PYTHON}" -u "${HERE}/finalize.py" "${RUNDIR}"

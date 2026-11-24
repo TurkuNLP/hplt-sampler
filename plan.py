@@ -120,6 +120,7 @@ def merge_run_counts(rundir, ipath):
 def main():
     p = argparse.ArgumentParser(description="Plan job: merge the run's fresh counts into the index and write plan.jsonl.")
     p.add_argument("rundir")
+    p.add_argument("--index-only", action="store_true", help="count-only run: merge the counts and check them, write no plan")
     args = p.parse_args()
     with open(os.path.join(args.rundir, "run.json"), encoding="utf-8") as fh:
         run = json.load(fh)
@@ -132,6 +133,9 @@ def main():
     if missing:
         print("[PLAN] ERROR: {} shards still have no trusted count, e.g. {}".format(len(missing), missing[0]), file=sys.stderr)
         return 3
+    if args.index_only:
+        print("[PLAN] Every one of the run's {} shards now has a trusted count in the index".format(len(urls)))
+        return 0
     entries = allocate(shards, int(run["n_samples"]), run.get("allocation", "round"), run["seed"])
     write_plan(entries, os.path.join(args.rundir, "plan.jsonl"))
     print("[PLAN] Wrote plan ({} samples planned)".format(sum(e["n_take"] for e in entries)))

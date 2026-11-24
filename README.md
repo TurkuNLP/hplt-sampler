@@ -102,6 +102,20 @@ Exact documents per shard, shared across runs and users: `<COUNTS_INDEX>/<corpus
 - **Checked:** sampling reads every shard in full, so it knows the true count at no cost. Finalize compares it with the plan; on any difference the allocation was wrong, the run stops before concatenation, the index row is corrected from the read, and the run should be redone from scratch.
 - **Written:** by the plan job (fresh counts) and finalize (corrections), under a file lock, replaced atomically. Rows come only from full reads.
 
+### Counting only
+
+`--count-only` counts the selected shards the index does not know yet and merges them into it: a count array and one `index` job, no plan, no sample. A language whose shards are all known exits at once. The run directory is `results-<corpus>-<subset>-<lang>-<wds>-counts/`, since `clean`, `noisy` and `poor` hold the same languages.
+
+To fill the index for whole corpus roots, `count_all.py` runs `--count-only` for every language under each root, largest first, submitting a language once the queue has `--reserve` free slots (default 30). It only sleeps and submits, so run it as a Slurm job of its own, from the directory that should hold the run directories:
+
+```bash
+mkdir -p count-runs && cd count-runs
+B=/appl/local/openeurollm/training/catalogue/hplt
+sbatch --account=project_462001491 ../sl-count-all $B/4.0/clean=v4 $B/4.0/noisy=v4 $B/4.0/poor=v4 $B/3.0/sorted=v3
+```
+
+`--dry-run` lists the languages with their sizes. A language whose run directory already exists is skipped (resume it with `hplt-sample --resume`).
+
 ## Allocation
 
 The plan decides how many documents each shard supplies; the sample stage then draws that many uniformly within the shard (a reservoir).
