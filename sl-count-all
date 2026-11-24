@@ -10,6 +10,11 @@
 #SBATCH --mem=2G
 #SBATCH --time=72:00:00
 set -euo pipefail
-HERE="${SAMPLER_HOME:-$(dirname "$(readlink -f "$0")")}"
+# Slurm runs a spooled copy of this script, so find the clone from the submitted command
+HERE="${SAMPLER_HOME:-}"
+if [[ -z "${HERE}" && -n "${SLURM_JOB_ID:-}" ]]; then
+  HERE="$(dirname "$(scontrol show job "${SLURM_JOB_ID}" | sed -n 's/^ *Command=\([^ ]*\).*/\1/p')")"
+fi
+HERE="$(cd "${HERE:-$(dirname "$(readlink -f "$0")")}" && pwd)"
 set -a; source "${HERE}/hplt-sampler.conf"; set +a
 exec "${PYTHON:-python3}" -u "${HERE}/count_all.py" "$@"
