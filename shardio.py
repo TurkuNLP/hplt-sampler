@@ -54,4 +54,31 @@ def count_local_lines(path):
     n = index_count(path)
     if n is not None:
         return n, "index"
-    return sum(1 for _ in iter_local_lines(path)), "scan"
+    return count_nonempty_lines(path), "scan"
+
+
+def count_nonempty_lines(path, chunk=1 << 20):
+    """Non-empty lines of a .jsonl.zst file, the same number iter_local_lines yields, in
+    constant memory: read in fixed chunks, so a record of any size never has to fit
+    (English HPLT 4 `poor` has lines too long for a 4 GB task)."""
+    proc = subprocess.Popen(["zstdcat", "--", path], stdout=subprocess.PIPE)
+    n, open_line = 0, False  # open_line: the current, unfinished line has non-whitespace
+    try:
+        while True:
+            buf = proc.stdout.read(chunk)
+            if not buf:
+                break
+            parts = buf.split(b"\n")
+            for i, part in enumerate(parts):
+                if part.strip():
+                    open_line = True
+                if i < len(parts) - 1:  # a newline ends this line
+                    n += open_line
+                    open_line = False
+        n += open_line  # a last line without a newline
+    finally:
+        proc.stdout.close()
+        rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError("zstdcat exited with status {} on {}".format(rc, path))
+    return n
